@@ -1,0 +1,1212 @@
+---
+title: "Prepping CA Municipal/County Financial Data"
+author: "Angel Mendiola Ross"
+date: '2023-05-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/finance_data/')
+```
+
+## Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  data.table, #fread() 
+  foreign, #load data types including stata .dta files 
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  readxl #to read excel files
+)
+```
+
+## Exploitative Revenue Sources Analysis
+
+I want to get the following revenue categories for cities and counties:
+* fines and fees
+* traffic fines
+* total own-source revenues (excluding intergovernmental transfers)
+
+For cities, I want to get the following spending categories:
+* police, 
+* health,
+* parks and rec, 
+* total expenditures
+
+The data come from the CA Local Government Financial Data <https://bythenumbers.sco.ca.gov> provided by the California State Controller's Office. The most recent data available (as of May 2023) is for FY 2020-2021.
+
+We also want to look over time, so I will also process the data back to 2003.
+
+## County-level Data
+
+### Reading in Excel Files
+
+First I will read in the raw county-level data for 2021.
+
+```{r}
+#seeing what sheets are in the 2021 excel document
+excel_sheets("data/raw/county/CountiesRawData_FY2020-2021_20220914_V3.xlsx")
+
+# "17 CO_REV_FINES_PENALTIES" is sheet 17
+county_fin <- read_excel("data/raw/county/CountiesRawData_FY2020-2021_20220914_V3.xlsx", sheet = 17, na = "NULL")
+county_fin %>% glimpse()
+
+county_fin %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    vehicle_fines = `Vehicle Code Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    other_court_fines = `Other Court Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties` ,
+    forfeitures = `Forfeitures and Penalties_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    delinquent_taxes = `Penalties and Costs of Delinquent Taxes_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    total_fines = `Total Fines, Forfeitures, and Penalties_Total Governmental Funds`
+  )
+
+county_fin <- county_fin[c(2,9,15,21,27,39)]
+
+# summary stats
+county_sum <- read_excel("data/raw/county/CountiesRawData_FY2020-2021_20220914_V3.xlsx", sheet = 41, na = "NULL")
+county_sum %>% glimpse()
+
+county_sum %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    revenues_govfunds = `Revenues_Governmental Funds_Summary`,
+    revenues_propfunds = `Revenues_Proprietary Funds_Summary`,
+  )
+
+county_sum <- county_sum[c(1:5)]
+county_sum %<>%
+  mutate(total_revenues = revenues_govfunds + revenues_propfunds)
+
+# combining
+county <- left_join(x = county_sum,
+                    y = county_fin,
+                    by = "entity_id")
+
+# subtracting intergovernmental transfers from state and federal govt
+# first getting state intergovernmental transfers
+county_st <- read_excel("data/raw/county/CountiesRawData_FY2020-2021_20220914_V3.xlsx", sheet = 18, na = "NULL")
+county_st %>% glimpse()
+
+county_st %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    state_intergov = `Total Intergovernmental – State_Total Governmental Funds`)
+
+county_st <- county_st[c(2,267)]
+
+# combining
+county <- left_join(x = county,
+                    y = county_st,
+                    by = "entity_id")
+
+# now getting federal intergovernmental transfers
+county_fed <- read_excel("data/raw/county/CountiesRawData_FY2020-2021_20220914_V3.xlsx", sheet = 19, na = "NULL")
+county_fed %>% glimpse()
+
+county_fed %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    fed_intergov = `Total Intergovernmental – Federal_Total Governmental Funds`)
+
+county_fed <- county_fed[c(2,129)]
+
+# combining
+county <- left_join(x = county,
+                    y = county_fed,
+                    by = "entity_id")
+
+# computing total fines & vehicle fines as a share of own source revenues
+county %<>%
+  mutate(ownsource_rev = revenues_govfunds-(fed_intergov+state_intergov),
+         fines_share = total_fines/ownsource_rev,
+         vehicle_fines_share = vehicle_fines/ownsource_rev)
+```
+
+Now that I have 2021 data cleaned up in a nice format, I will get 2003-2020 data in a similar format to stack.
+
+Working backwards starting with 2018-2020 data.
+
+```{r}
+#seeing what sheets are in the 2018-2020 excel document
+excel_sheets("data/raw/county/CountiesRawData_FY2018-2020_20210926_V4.xlsx")
+
+# "17 CO_REV_FINES_PENALTIES" is sheet 17
+county_fin_20 <- read_excel("data/raw/county/CountiesRawData_FY2018-2020_20210926_V4.xlsx", sheet = 17, na = "NULL")
+county_fin_20 %>% glimpse()
+
+county_fin_20 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    vehicle_fines = `Vehicle Code Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    other_court_fines = `Other Court Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties` ,
+    forfeitures = `Forfeitures and Penalties_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    delinquent_taxes = `Penalties and Costs of Delinquent Taxes_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    total_fines = `Total Fines, Forfeitures, and Penalties_Total Governmental Funds`
+  )
+
+county_fin_20 <- county_fin_20[c(1:3,9,15,21,27,39)]
+
+# summary stats
+county_sum_20 <- read_excel("data/raw/county/CountiesRawData_FY2018-2020_20210926_V4.xlsx", sheet = 41, na = "NULL")
+county_sum_20 %>% glimpse()
+
+county_sum_20 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    revenues_govfunds = `Revenues_Governmental Funds_Summary`,
+    revenues_propfunds = `Revenues_Proprietary Funds_Summary`,
+  )
+
+county_sum_20 <- county_sum_20[c(2:5)]
+county_sum_20 %<>%
+  mutate(total_revenues = revenues_govfunds + revenues_propfunds)
+
+# combining
+county_20 <- left_join(x = county_sum_20,
+                    y = county_fin_20,
+                    by = c("entity_id", "year"))
+
+# subtracting intergovernmental transfers from state and federal govt
+# first getting state intergovernmental transfers
+county_st_20 <- read_excel("data/raw/county/CountiesRawData_FY2018-2020_20210926_V4.xlsx", sheet = 18, na = "NULL")
+county_st_20 %>% glimpse()
+
+county_st_20 %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    state_intergov = `Total Intergovernmental – State_Total Governmental Funds`)
+
+county_st_20 <- county_st_20[c(2,3,267)]
+
+# combining
+county_20 <- left_join(x = county_20,
+                    y = county_st_20,
+                    by = c("entity_id", "year"))
+
+# now getting federal intergovernmental transfers
+county_fed_20 <- read_excel("data/raw/county/CountiesRawData_FY2018-2020_20210926_V4.xlsx", sheet = 19, na = "NULL")
+county_fed_20 %>% glimpse()
+
+county_fed_20 %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total Intergovernmental – Federal_Total Governmental Funds`)
+
+county_fed_20 <- county_fed_20[c(2,3,129)]
+
+# combining
+county_20 <- left_join(x = county_20,
+                    y = county_fed_20,
+                    by = c("entity_id", "year"))
+
+# computing total fines & vehicle fines as a share of own source revenues
+county_20 %<>%
+  mutate(ownsource_rev = revenues_govfunds-(fed_intergov+state_intergov),
+         fines_share = total_fines/ownsource_rev,
+         vehicle_fines_share = vehicle_fines/ownsource_rev)
+```
+
+Now the 2017 data.
+
+```{r}
+#seeing what sheets are in the 2017 excel document
+excel_sheets("data/raw/county/CountiesRawData_20181228.xlsx")
+
+# "17 CO_REV_FINES_PENALTIES" is sheet 17
+county_fin_17 <- read_excel("data/raw/county/CountiesRawData_20181228.xlsx", sheet = 16, na = "NULL")
+county_fin_17 %>% glimpse()
+
+county_fin_17 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    vehicle_fines = `Vehicle Code Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    other_court_fines = `Other Court Fines_Total Governmental Funds_Fines, Forfeitures, and Penalties` ,
+    forfeitures = `Forfeitures and Penalties_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    delinquent_taxes = `Penalties and Costs of Delinquent Taxes_Total Governmental Funds_Fines, Forfeitures, and Penalties`,
+    total_fines = `Total Fines, Forfeitures, and Penalties_Total Governmental Funds_Fines, Forfeitures, and Penalties`
+  )
+
+county_fin_17 <- county_fin_17[c(1:3,9,15,21,27,39)]
+
+# summary stats
+county_sum_17 <- read_excel("data/raw/county/CountiesRawData_20181228.xlsx", sheet = 39, na = "NULL")
+county_sum_17 %>% glimpse()
+
+county_sum_17 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    revenues_govfunds = `Revenues_Governmental Funds_Summary`,
+    revenues_propfunds = `Revenues_Proprietary Funds_Summary`,
+  )
+
+county_sum_17 <- county_sum_17[c(2:5)]
+county_sum_17 %<>%
+  mutate(total_revenues = revenues_govfunds + revenues_propfunds)
+
+# combining
+county_17 <- left_join(x = county_sum_17,
+                    y = county_fin_17,
+                    by = c("entity_id", "year"))
+
+# subtracting intergovernmental transfers from state and federal govt
+# first getting state intergovernmental transfers
+county_st_17 <- read_excel("data/raw/county/CountiesRawData_20181228.xlsx", sheet = 17, na = "NULL")
+county_st_17 %>% glimpse()
+
+county_st_17 %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    state_intergov = `Total Intergovernmental - State_Total Governmental Funds_Intergovernmental - State`)
+
+county_st_17 <- county_st_17[c(3,267)]
+
+# combining
+county_17 <- left_join(x = county_17,
+                    y = county_st_17,
+                    by = c("entity_id"))
+
+# now getting federal intergovernmental transfers
+county_fed_17 <- read_excel("data/raw/county/CountiesRawData_20181228.xlsx", sheet = 18, na = "NULL")
+county_fed_17 %>% glimpse()
+
+county_fed_17 %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total Intergovernmental - Federal_Total Governmental Funds_Intergovernmental - Federal`)
+
+county_fed_17 <- county_fed_17[c(2,3,129)]
+
+# combining
+county_17 <- left_join(x = county_17,
+                    y = county_fed_17,
+                    by = c("entity_id", "year"))
+
+# computing total fines & vehicle fines as a share of own source revenues
+county_17 %<>%
+  mutate(ownsource_rev = revenues_govfunds-(fed_intergov+state_intergov),
+         fines_share = total_fines/ownsource_rev,
+         vehicle_fines_share = vehicle_fines/ownsource_rev)
+```
+
+Now the 2003-2016 file.
+
+```{r}
+#seeing what sheets are in the 2021 excel document
+excel_sheets("data/raw/county/CountiesRawData_20180613.xlsx")
+
+# "17 CO_REV_FINES_PENALTIES" is sheet 9
+county_fin_16 <- read_excel("data/raw/county/CountiesRawData_20180613.xlsx", sheet = 9, na = "NULL")
+county_fin_16 %>% glimpse()
+
+county_fin_16 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    vehicle_fines = `Vehicle Code Fines`,
+    other_court_fines = `Other Court Fines`,
+    forfeitures = `Forfeitures And Penalties`,
+    delinquent_taxes = `Penalties And Cost On Delinquent Taxes`,
+    total_fines = `Total Fines,  Forfeitures, And Penalties`
+  )
+
+# summary stats
+county_sum_16 <- read_excel("data/raw/county/CountiesRawData_20180613.xlsx", sheet = 41, na = "NULL")
+county_sum_16 %>% glimpse()
+
+county_sum_16 %<>% 
+  rename(
+    county_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    revenues_govfunds = `Revenues_Governmental Funds_Summary`,
+    revenues_propfunds = `Revenues_Proprietary Funds_Summary`,
+  )
+
+county_sum_16 <- county_sum_16[c(1:5)]
+county_sum_16 %<>%
+  mutate(total_revenues = revenues_govfunds + revenues_propfunds)
+
+# combining
+county_16 <- left_join(x = county_sum_16,
+                    y = county_fin_16,
+                    by = "entity_id")
+
+# subtracting intergovernmental transfers from state and federal govt
+# first getting state intergovernmental transfers
+county_st_16 <- read_excel("data/raw/county/CountiesRawData_20180613.xlsx", sheet = 11, na = "NULL")
+
+county_st_16 %<>% 
+  rename(
+    entity_id = `Entity ID_State`,
+    year = `Fiscal Year_State`,
+    state_intergov = `Total State`)
+
+county_st_16 <- county_st_16[c(3,2,45)]
+
+# combining
+county_16 <- left_join(x = county_16,
+                    y = county_st_16,
+                    by = "entity_id")
+
+# now getting federal intergovernmental transfers
+county_fed_16 <- read_excel("data/raw/county/CountiesRawData_20180613.xlsx", sheet = 12, na = "NULL")
+
+county_fed_16 %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total Federal`)
+
+county_fed_16 <- county_fed_16[c(3,2,24)]
+
+# combining
+county_16 <- left_join(x = county_16,
+                    y = county_fed_16,
+                    by = "entity_id")
+
+# computing total fines & vehicle fines as a share of own source revenues
+county_16 %<>%
+  mutate(ownsource_rev = revenues_govfunds-(fed_intergov+state_intergov),
+         fines_share = total_fines/ownsource_rev,
+         vehicle_fines_share = vehicle_fines/ownsource_rev)
+```
+
+### Merging into Single County-Year Database
+
+```{r}
+# rearranging columns to match county
+county_20 <- county_20[c(6,1:5,7:16)]
+county_17 <- county_17[c(6,1:5,7:16)]
+
+county <- rbind(county,county_20,county_17)
+county %<>%
+  arrange(county_name)
+
+# saving RData file (NOTE: I do not have totals for 2003-2016 yet)
+save(county, 
+     file = "data/county_fin_data.RData")
+```
+
+## Analyzing City-Level Data
+
+```{r}
+#seeing what sheets are in the 2021 excel document
+excel_sheets("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx")
+
+# "CI_EXP_GEN_GOV" for policing is now in sheet 21
+city_fin <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = 26, na = "NULL")
+city_fin %>% glimpse()
+
+city_fin %<>% 
+  rename(
+    city_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    public_safety_exp = `Total Public Safety_Current Expenditures`,
+    police_total = `Police_Current Expenditures_Public Safety`,
+    street_lighting = `Street Lighting_Current Expenditures_Public Safety`
+  )
+
+gen_gov_expen <- c("city_name", "year", "entity_id", "police_total", "street_lighting", "public_safety_exp")
+gen_gov_expen21 <- city_fin[gen_gov_expen]
+
+transport <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = "25 CI_EXP_TRANSP", na = "NULL")
+transport %>% glimpse()
+
+transport %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    transport_expend = `Total Transportation_Current Expenditures`,
+    public_transit = `Public Transit_Current Expenditures_Transportation`,
+    housing = `Housing_Current Expenditures_Community Development`
+  )
+
+transport_vars <- c("entity_id", 
+                    "transport_expend", 
+                    "public_transit",
+                    "housing")
+
+transport2021 <- transport[transport_vars]
+
+# getting health expenditures
+health <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = "26 CI_EXP_HEALTH", na = "NULL")
+health %>% glimpse()
+
+health %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    parks_and_rec = `Parks and Recreation_Current Expenditures_Culture and Leisure`,
+    libraries = `Libraries_Current Expenditures_Culture and Leisure`,
+    health_expend = `Total Health_Current Expenditures`,
+    culture_expend = `Total Culture and Leisure_Current Expenditures`
+  )
+
+health_vars <- c("entity_id",
+                 "parks_and_rec",
+                 "libraries",
+                 "health_expend",
+                 "culture_expend")
+
+health_2021 <- health[health_vars]
+
+# getting fines and fees data from sheet "CI_REV_FINES_PENALTIES"
+fines <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = "19 CI_REV_FINES_PENALTIES", na = "NULL")
+fines %>% glimpse()
+
+fines %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    total_fines_rev = `Total Fines, Forfeitures, and Penalties_Total Revenues_Fines, Forfeitures, and Penalties`,
+    penalties_rev = `Forfeitures and Penalties_Total Revenues_Fines, Forfeitures, and Penalties`,
+    vehicle_fines = `Vehicle Code Fines_Total Revenues_Fines, Forfeitures, and Penalties`
+  )
+
+fines_vars <- c("entity_id",
+                "total_fines_rev",
+                "penalties_rev",
+                "vehicle_fines")
+
+fines_2021 <- fines[fines_vars]
+
+# getting intergovernmental transfers
+state <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = 20, na = "NULL")
+state %>% glimpse() 
+
+state %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    state_intergov = `Total Intergovernmental – State_Total Revenues`
+  )
+state <- state[c(2,67)]
+
+fed <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = 21, na = "NULL")
+fed %>% glimpse() 
+
+fed %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    fed_intergov = `Total Intergovernmental – Federal_Total Revenues_Intergovernmental – Federal`,
+    county_intergov = `Total Intergovernmental – County_Total Revenues_Intergovernmental – County`
+  )
+
+fed <- fed[c(2,35,43)]
+
+# now total expenditures and revenues
+total_exp <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = "41a CIX_SUMM_STATS", na = "NULL")
+total_exp %>% glimpse()
+
+total_exp %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    total_expend_gov = `Expenditures/Expenses_Governmental Funds_Summary`,
+    total_expend_prop = `Expenditures/Expenses_Proprietary Funds_Summary`,
+    total_gov_rev = `Revenues_Governmental Funds_Summary`,
+    total_prop_rev = `Revenues_Proprietary Funds_Summary`
+  )
+
+total_exp_vars <- c("entity_id",
+                    "total_expend_gov",
+                    "total_expend_prop",
+                    "total_gov_rev",
+                    "total_prop_rev")
+
+total_exp_2021 <- total_exp[total_exp_vars]
+```
+
+## Cleaning and combining city financial data
+
+```{r}
+city_fin_data <- left_join(gen_gov_expen21, total_exp_2021, by = c('entity_id'))
+city_fin_data <- left_join(city_fin_data, state, by = c('entity_id'))
+city_fin_data <- left_join(city_fin_data, fed, by = c('entity_id'))
+city_fin_data <- left_join(city_fin_data, transport2021, by = c('entity_id'))
+city_fin_data <- left_join(city_fin_data, fines_2021, by = c('entity_id'))
+city_fin_data <- left_join(city_fin_data, health_2021, by = c('entity_id'))
+
+city_fin_data %<>%
+  mutate(total_expend = total_expend_gov + total_expend_prop,
+         total_rev = total_gov_rev + total_prop_rev,
+         own_source_rev = total_gov_rev-(state_intergov+fed_intergov+county_intergov),
+         fines_share = total_fines_rev/own_source_rev,
+         vehicle_fines_share = vehicle_fines/own_source_rev,
+         parksrec_share = parks_and_rec/total_expend,
+         health_share = health_expend/total_expend,
+         police_share = police_total/total_expend,
+         housing_share = housing/total_expend,
+         libraries_share = libraries/total_expend,
+         culture_share = culture_expend/total_expend)
+
+# saving RData file
+save(city_fin_data, 
+     file = "city_fin_data_2021.RData")
+```
+
+Now getting data for 2018-2020...
+
+```{r}
+#seeing what sheets are in the 2018-2020 excel document
+excel_sheets("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx")
+
+# "CI_EXP_GEN_GOV" for policing is now in sheet 21
+city_fin <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 24, na = "NULL")
+city_fin %>% glimpse()
+
+city_fin %<>% 
+  rename(
+    city_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    public_safety_exp = `Total Public Safety_Current Expenditures`,
+    police_total = `Police_Current Expenditures_Public Safety`,
+    street_lighting = `Street Lighting_Current Expenditures_Public Safety`
+  )
+
+gen_gov_expen <- c("city_name", "year", "entity_id", "police_total", "street_lighting", "public_safety_exp")
+gen_gov_expen20 <- city_fin[gen_gov_expen]
+
+transport <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 25, na = "NULL")
+transport %>% glimpse()
+
+transport %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    transport_expend = `Total Transportation_Current Expenditures`,
+    public_transit = `Public Transit_Current Expenditures_Transportation`,
+    housing = `Housing_Current Expenditures_Community Development`
+  )
+
+transport_vars <- c("entity_id", 
+                    "year",
+                    "transport_expend", 
+                    "public_transit",
+                    "housing")
+
+transport2020 <- transport[transport_vars]
+
+# getting health expenditures
+health <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 26, na = "NULL")
+health %>% glimpse()
+
+health %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    parks_and_rec = `Parks and Recreation_Current Expenditures_Culture and Leisure`,
+    libraries = `Libraries_Current Expenditures_Culture and Leisure`,
+    health_expend = `Total Health_Current Expenditures`,
+    culture_expend = `Total Culture and Leisure_Current Expenditures`
+  )
+
+health_vars <- c("entity_id",
+                 "year",
+                 "parks_and_rec",
+                 "libraries",
+                 "health_expend",
+                 "culture_expend")
+
+health_2020 <- health[health_vars]
+
+# getting fines and fees data from sheet "CI_REV_FINES_PENALTIES"
+fines <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 19, na = "NULL")
+fines %>% glimpse()
+
+fines %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_fines_rev = `Total Fines and Forfeitures_Total Revenues_Fines and Forfeitures`,
+    penalties_rev = `Forfeitures and Penalties_Total Revenues_Fines and Forfeitures`,
+    vehicle_fines = `Vehicle Code Fines_Total Revenues_Fines and Forfeitures`
+  )
+
+fines_vars <- c("entity_id",
+                "year",
+                "total_fines_rev",
+                "penalties_rev",
+                "vehicle_fines")
+
+fines_2020 <- fines[fines_vars]
+
+# getting intergovernmental transfers
+state <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 20, na = "NULL")
+state %>% glimpse() 
+
+state %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    state_intergov = `Total Intergovernmental – State_Total Revenues`
+  )
+state <- state[c(2,3,69)]
+
+fed <- read_excel("data/raw/municipal/CIX_EachDataSet_2020-21_20221009_V9.xlsx", sheet = 21, na = "NULL")
+fed %>% glimpse() 
+
+fed %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total Intergovernmental – Federal_Total Revenues_Intergovernmental – Federal`,
+    county_intergov = `Total Intergovernmental – County_Total Revenues_Intergovernmental – County`
+  )
+
+fed <- fed[c(2,3,35,43)]
+
+# now total expenditures and revenues
+total_exp <- read_excel("data/raw/municipal/CIX_EachDataSet_2017-18_to_2019-20_20211105_V2.xlsx", sheet = 43, na = "NULL")
+total_exp %>% glimpse()
+
+total_exp %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_expend_gov = `Expenditures/Expenses_Governmental Funds_Summary`,
+    total_expend_prop = `Expenditures/Expenses_Proprietary Funds_Summary`,
+    total_gov_rev = `Revenues_Governmental Funds_Summary`,
+    total_prop_rev = `Revenues_Proprietary Funds_Summary`
+  )
+
+total_exp_vars <- c("entity_id",
+                    "year",
+                    "total_expend_gov",
+                    "total_expend_prop",
+                    "total_gov_rev",
+                    "total_prop_rev")
+
+total_exp_2020 <- total_exp[total_exp_vars]
+
+# combining data
+city_fin_20 <- left_join(gen_gov_expen20, total_exp_2020, by = c('entity_id', 'year'))
+city_fin_20 <- left_join(city_fin_20, state, by = c('entity_id', 'year'))
+city_fin_20 <- left_join(city_fin_20, fed, by = c('entity_id', 'year'))
+city_fin_20 <- left_join(city_fin_20, transport2020, by = c('entity_id', 'year'))
+city_fin_20 <- left_join(city_fin_20, fines_2020, by = c('entity_id', 'year'))
+city_fin_20 <- left_join(city_fin_20, health_2020, by = c('entity_id', 'year'))
+
+city_fin_20 %<>%
+  mutate(total_expend = total_expend_gov + total_expend_prop,
+         total_rev = total_gov_rev + total_prop_rev,
+         own_source_rev = total_gov_rev-(state_intergov+fed_intergov+county_intergov),
+         fines_share = total_fines_rev/own_source_rev,
+         vehicle_fines_share = vehicle_fines/own_source_rev,
+         parksrec_share = parks_and_rec/total_expend,
+         health_share = health_expend/total_expend,
+         police_share = police_total/total_expend,
+         housing_share = housing/total_expend,
+         libraries_share = libraries/total_expend,
+         culture_share = culture_expend/total_expend)
+
+```
+
+Now getting data for 2017...
+
+```{r}
+#seeing what sheets are in the 2017 excel document
+excel_sheets("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx")
+
+# "CI_EXP_GEN_GOV" for policing is now in sheet 24
+city_fin <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 22, na = "NULL")
+city_fin %>% glimpse()
+
+city_fin %<>% 
+  rename(
+    city_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    public_safety_exp = `Total Public Safety_Current Expenditures`,
+    police_total = `Police_Current Expenditures_Public Safety`,
+    street_lighting = `Street Lighting_Current Expenditures_Public Safety`
+  )
+
+gen_gov_expen <- c("city_name", "year", "entity_id", "police_total", "street_lighting", "public_safety_exp")
+gen_gov_expen17 <- city_fin[gen_gov_expen]
+
+transport <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 23, na = "NULL")
+transport %>% glimpse()
+
+transport %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    transport_expend = `Total Transportation_Current Expenditures`,
+    public_transit = `Public Transit_Current Expenditures_Transportation`,
+    housing = `Housing_Current Expenditures_Community Development`
+  )
+
+transport_vars <- c("entity_id", 
+                    "transport_expend", 
+                    "public_transit",
+                    "housing")
+
+transport2017 <- transport[transport_vars]
+
+# getting health expenditures
+health <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 24, na = "NULL")
+health %>% glimpse()
+
+health %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    parks_and_rec = `Parks and Recreation_Current Expenditures_Culture and Leisure`,
+    libraries = `Libraries_Current Expenditures_Culture and Leisure`,
+    health_expend = `Total Health_Current Expenditures`,
+    culture_expend = `Total  Culture and Leisure_Current Expenditures`
+  )
+
+health_vars <- c("entity_id",
+                 "parks_and_rec",
+                 "libraries",
+                 "health_expend",
+                 "culture_expend")
+
+health_2017 <- health[health_vars]
+
+# getting fines and fees data from sheet "CI_REV_FINES_PENALTIES"
+fines <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 17, na = "NULL")
+fines %>% glimpse()
+
+fines %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_fines_rev = `Total Fines and Forfeitures_Total Revenues`,
+    vehicle_fines = `Vehicle Code Fines_Total Revenues`
+  )
+
+fines_vars <- c("entity_id",
+                "total_fines_rev",
+                "vehicle_fines")
+
+fines_2017 <- fines[fines_vars]
+fines_2017 %<>%
+  mutate(penalties_rev = NA)
+fines_2017 <- fines_2017[c(1,2,4,3)]
+
+# getting intergovernmental transfers
+state <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 18, na = "NULL")
+state %>% glimpse() 
+
+state %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    state_intergov = `Total Intergovernmental - State_Total Revenues`
+  )
+state <- state[c(3,48)]
+
+fed <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 19, na = "NULL")
+fed %>% glimpse() 
+
+fed %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total Intergovernmental – Federal_Total Revenues`,
+    county_intergov = `Total Intergovernmental – County_Total Revenues`
+  )
+
+fed <- fed[c(3,23,31)]
+
+# now total expenditures and revenues
+total_exp <- read_excel("data/raw/municipal/CIX_EachDataSet_20181127-2.xlsx", sheet = 40, na = "NULL")
+total_exp %>% glimpse()
+
+total_exp %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_expend_gov = `Expenditures/Expenses_Governmental Funds_Summary`,
+    total_expend_prop = `Expenditures/Expenses_Proprietary Funds_Summary`,
+    total_gov_rev = `Revenues_Governmental Funds_Summary`,
+    total_prop_rev = `Revenues_Proprietary Funds_Summary`
+  )
+
+total_exp_vars <- c("entity_id",
+                    "total_expend_gov",
+                    "total_expend_prop",
+                    "total_gov_rev",
+                    "total_prop_rev")
+
+total_exp_2017 <- total_exp[total_exp_vars]
+
+# combining data
+city_fin_17 <- left_join(gen_gov_expen17, total_exp_2017, by = c('entity_id'))
+city_fin_17 <- left_join(city_fin_17, state, by = c('entity_id'))
+city_fin_17 <- left_join(city_fin_17, fed, by = c('entity_id'))
+city_fin_17 <- left_join(city_fin_17, transport2017, by = c('entity_id'))
+city_fin_17 <- left_join(city_fin_17, fines_2017, by = c('entity_id'))
+city_fin_17 <- left_join(city_fin_17, health_2017, by = c('entity_id'))
+
+city_fin_17 %<>%
+  mutate(total_expend = total_expend_gov + total_expend_prop,
+         total_rev = total_gov_rev + total_prop_rev,
+         own_source_rev = total_gov_rev-(state_intergov+fed_intergov+county_intergov),
+         fines_share = total_fines_rev/own_source_rev,
+         vehicle_fines_share = vehicle_fines/own_source_rev,
+         parksrec_share = parks_and_rec/total_expend,
+         health_share = health_expend/total_expend,
+         police_share = police_total/total_expend,
+         housing_share = housing/total_expend,
+         libraries_share = libraries/total_expend,
+         culture_share = culture_expend/total_expend)
+```
+
+Now getting data for 2003-2016...
+
+```{r}
+#seeing what sheets are in the 2018-2020 excel document
+excel_sheets("data/raw/municipal/CI_EachDataSet_20180613.xlsx")
+
+# "CI_EXP_GEN_GOV" for policing is now in sheet 21
+city_fin <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 19, na = "NULL")
+city_fin %>% glimpse()
+
+city_fin %<>% 
+  rename(
+    city_name = `Entity Name`,
+    year = `Fiscal Year`,
+    entity_id = `Entity ID`,
+    public_safety_exp = `Total _Total Expenditures_Public Safety`,
+    police_total = `Police_Total Expenditures`,
+    street_lighting = `Street Lighting_Total Expenditures`
+  )
+
+gen_gov_expen <- c("city_name", "year", "entity_id", "police_total", "street_lighting", "public_safety_exp")
+gen_gov_expen16 <- city_fin[gen_gov_expen]
+
+transport <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 20, na = "NULL")
+transport %>% glimpse()
+
+transport %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    transport_expend = `Total_Total Expenditures_Transportation`,
+    public_transit = `Public Transit_Total Expenditures`,
+    housing = `Housing_Total Expenditures`
+  )
+
+transport_vars <- c("entity_id", 
+                    "year",
+                    "transport_expend", 
+                    "public_transit",
+                    "housing")
+
+transport2016 <- transport[transport_vars]
+
+# getting health expenditures
+health <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 21, na = "NULL")
+health %>% glimpse()
+
+health %<>% 
+  rename(
+    entity_id = `Entity Name`,
+    year = `Fiscal Year`,
+    parks_and_rec = `Parks and Recreation_Total Expenditures`,
+    health_expend = `Total_Total Expenditures_Health`,
+    culture_expend = `Total_Total Expenditures_Culture and Leisure`
+  )
+
+health_vars <- c("entity_id",
+                 "year",
+                 "parks_and_rec",
+                 "health_expend",
+                 "culture_expend")
+
+health_2016 <- health[health_vars]
+health_2016 %<>%
+  mutate(libraries = NA)
+health_2016 <- health_2016[c(1:3,6,4,5)]
+
+# getting fines and fees data from sheet "CI_REV_FINES_PENALTIES"
+fines <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 13, na = "NULL")
+fines %>% glimpse()
+
+fines %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_fines_rev = `Total_Total Revenues_Fines and Forfeitures`
+  )
+
+fines %<>%
+  mutate(penalties_rev = NA,
+         vehicle_fines = `Vehicle Code Fines_General Revenues`+`Vehicle Code Fines_Functional Revenues`)
+
+fines_vars <- c("entity_id",
+                "year",
+                "total_fines_rev",
+                "penalties_rev",
+                "vehicle_fines")
+
+fines_2016 <- fines[fines_vars]
+
+# getting intergovernmental transfers
+state <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 14, na = "NULL")
+state %>% glimpse() 
+
+state %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    state_intergov = `Total_Total Revenues`
+  )
+state <- state[c(2,3,24)]
+
+fed <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 15, na = "NULL")
+fed %>% glimpse() 
+
+fed %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    fed_intergov = `Total _Total Revenues_Intergovernmental - Federal`,
+    county_intergov = `Total _Total Revenues_Intergovernmental - County`
+  )
+
+fed <- fed[c(2,3,15,29)]
+
+# now total expenditures and revenues
+total_exp <- read_excel("data/raw/municipal/CI_EachDataSet_20180613.xlsx", sheet = 35, na = "NULL")
+total_exp %>% glimpse()
+
+total_exp %<>% 
+  rename(
+    entity_id = `Entity ID`,
+    year = `Fiscal Year`,
+    total_expend = `Total_Total Expenditures`,
+    total_gov_rev = `Total_General Revenues`,
+    total_prop_rev = `Total_Functional Revenues`
+  )
+
+total_exp_vars <- c("entity_id",
+                    "year",
+                    "total_expend_gov",
+                    "total_expend_prop",
+                    "total_gov_rev",
+                    "total_prop_rev",
+                    "total_expend")
+
+total_exp %<>%
+  mutate(total_expend_gov = NA,
+         total_expend_prop = NA)
+
+total_exp_2016 <- total_exp[total_exp_vars]
+
+# combining data
+city_fin_16 <- left_join(gen_gov_expen16, total_exp_2016, by = c('entity_id', 'year'))
+city_fin_16 <- left_join(city_fin_16, state, by = c('entity_id', 'year'))
+city_fin_16 <- left_join(city_fin_16, fed, by = c('entity_id', 'year'))
+city_fin_16 <- left_join(city_fin_16, transport2016, by = c('entity_id', 'year'))
+city_fin_16 <- left_join(city_fin_16, fines_2016, by = c('entity_id', 'year'))
+health_2016$entity_id <- as.numeric(health_2016$entity_id)
+city_fin_16 <- left_join(city_fin_16, health_2016, by = c('entity_id', 'year'))
+
+city_fin_16 %<>%
+  mutate(total_rev = total_gov_rev + total_prop_rev,
+         own_source_rev = total_gov_rev-(state_intergov+fed_intergov+county_intergov),
+         fines_share = total_fines_rev/own_source_rev,
+         vehicle_fines_share = vehicle_fines/own_source_rev,
+         parksrec_share = parks_and_rec/total_expend,
+         health_share = health_expend/total_expend,
+         police_share = police_total/total_expend,
+         housing_share = housing/total_expend,
+         libraries_share = libraries/total_expend,
+         culture_share = culture_expend/total_expend)
+
+# fixing
+city_fin_16 <- city_fin_16[c(1:10,12:24,11,25:34)]
+
+```
+
+Finally merging into a single city-year file.
+
+```{r}
+df <- rbind(city_fin_data,city_fin_20,city_fin_17,city_fin_16)
+df %<>%
+  arrange(entity_id)
+```
+
+Now adding county-level identifiers.
+
+```{r}
+# getting county crosswalk
+library(tigris)
+library(sf)
+
+cnts <- 
+    counties(state = 'CA', cb = TRUE, class = 'sf') %>% 
+    select(GEOID_CTY = GEOID, CTY_NAME = NAME, CTY_NAME_FULL = NAMELSAD)
+
+places <- 
+    places(state = 'CA', cb = TRUE, class = 'sf') %>% 
+    st_centroid() %>% # convert polygons to centroid
+    st_join(cnts, join = st_intersects) # join the county to place
+
+places <- places[c(5:7,13:15)]
+places %<>% rename(city_name = NAME)
+# renaming those that didn't join
+places %<>%
+  mutate(city_name = ifelse(city_name=="Amador City", "Amador",city_name),
+         city_name = ifelse(city_name=="Carmel-by-the-Sea", "Carmel-By-The-Sea",city_name),
+         city_name = ifelse(city_name=="El Paso de Robles (Paso Robles)", "El Paso De Robles",city_name),
+         city_name = ifelse(city_name=="La Cañada Flintridge", "La Canada Flintridge",city_name),
+         city_name = ifelse(city_name=="Mount Shasta", "Mt. Shasta",city_name),
+         city_name = ifelse(city_name=="San Buenaventura (Ventura)", "San Buenaventura",city_name))
+
+# joining with city data
+city <- left_join(x = df,
+                  y = places,
+                  by = "city_name")
+
+# dropping CDPs
+city %<>%
+  subset(!grepl("CDP",NAMELSAD))
+
+# saving this data out
+save(city, file = "data/city_fin_data.RData")
+
+```
+
+Getting demographic data for municipalities and counties.
+
+```{r}
+# getting demographic data back to 2010
+library(tidycensus)
+census_api_key("1ce78664b294208f88f53c49746f378a51893b62", overwrite = TRUE)
+
+# acs data
+years <- lst(2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021)
+
+race_acs <- c(
+  total_pop = "B03002_001",
+  nhw = "B03002_003",
+  nhb = "B03002_004",
+  nhaian = "B03002_005",
+  nha = "B03002_006",
+  nhnh = "B03002_007",
+  nhsor = "B03002_008",
+  nhmixed = "B03002_009",
+  his = "B03002_012"
+)
+
+pop_by_race_year_place <- map_dfr(
+  years,
+  ~ get_acs(
+    geography = "place",
+    variables = race_acs,
+    state = "CA",
+    year = .x,
+    survey = "acs5"
+  ),
+  .id = "year"
+)
+
+# deleting moe from acs dataframe
+pop_by_race_year_place %<>%
+  select(-c(moe))
+
+# transforming
+pop_by_race_wide <- pop_by_race_year_place %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+
+pop_by_race_wide %<>%
+  mutate(pnhw = nhw/total_pop,
+         pnhb = nhb/total_pop,
+         phis = his/total_pop,
+         papi = (nha + nhnh)/total_pop)
+
+# rearranging slightly
+pop_by_race_wide <- pop_by_race_wide[c(1:3,12,4:11,13:16)]
+
+# now for county demographics
+pop_by_race_year_county <- map_dfr(
+  years,
+  ~ get_acs(
+    geography = "county",
+    variables = race_acs,
+    state = "CA",
+    year = .x,
+    survey = "acs5"
+  ),
+  .id = "year"
+)
+
+# deleting moe from acs dataframe
+pop_by_race_year_county %<>%
+  select(-c(moe))
+
+# transforming
+pop_by_race_wide_cty <- pop_by_race_year_county %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+
+pop_by_race_wide_cty %<>%
+  mutate(pnhw = nhw/total_pop,
+         pnhb = nhb/total_pop,
+         phis = his/total_pop,
+         papi = (nha + nhnh)/total_pop)
+
+# rearranging slightly
+pop_by_race_wide_cty <- pop_by_race_wide_cty[c(1:3,12,4:11,13:16)]
+
+# creating a new county_name column to join with financial data
+pop_by_race_wide_cty %<>%
+  mutate(county_name = str_remove_all(NAME, " County, California"))
+pop_by_race_wide_cty <- pop_by_race_wide_cty[c(1:3,17,4:16)]
+
+```
+
+Merging demographic and financial data into a final city and county files.
+
+NOTE: City financial data goes back to 2003 and the ACS data that I downloaded goes back to 2009.
+
+```{r}
+pop_by_race_wide$year <- as.numeric(pop_by_race_wide$year)
+city_df <- left_join(x = city,
+                     y = pop_by_race_wide,
+                     by = c("GEOID", "year"))
+
+pop_by_race_wide_cty$year <- as.numeric(pop_by_race_wide_cty$year)
+county_df <- left_join(x = county,
+                     y = pop_by_race_wide_cty,
+                     by = c("county_name", "year"))
+
+
+# write files
+save(city_df, file = "data/city_df.RData")
+write_csv(city_df, file = "data/city_fin_data.csv", na = "")
+save(county_df, file = "data/county_df.RData")
+write_csv(county_df, file = "data/county.csv", na = "")
+```
+
