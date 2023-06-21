@@ -1,0 +1,299 @@
+---
+title: "Analyzing Eviction Lab Data, 2000-2018"
+author: "Angel Mendiola Ross"
+date: '2023-06-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/evictions/')
+```
+
+## Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  data.table, #fread() 
+  foreign, #load data types including stata .dta files 
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  readxl #to read excel files
+)
+```
+
+## Evictions Data Analysis
+
+This analysis is based on data from 2000-2018 provided by the Eviction Lab <https://data-downloads.evictionlab.org/#data-for-analysis/>. It draws on two of their data sets: "county_court-issued_2000_2018.csv" (which provides court-issued data for counties) and "tract_proprietary_valid_2000_2018.csv" (which provides proprietary data for census tracts). I reduced both raw csvs just to counties in California to reduce file size. All other manipulation and analysis done within this file. I did not use the "county_proprietary_valid_2000_2018.csv" file because there was no data for Solano County.
+
+Data for Solano County across both data sets is only available from 2010 to 2017, so I restrict analysis to these years.
+
+I will also bring in census data to illustrate change in tenure and renter/homeowner affordability measures from 2000 to 2017.
+
+```{r}
+# load data
+county <- read_csv("data/raw/county_court-issued_2000_2018.csv")
+tract <- read_csv("data/raw/tract_proprietary_valid_2000_2018.csv")
+
+# reducing datasets to 2010-2017 because this is what is available for Solano
+county %<>%
+  subset(year>2009)
+tract %<>%
+  subset(year>2009)
+```
+
+First I will compute rates per 100 renting households for the measures in the county data set (similar to how they are reported in the tract-level data set).
+
+```{r}
+county %<>%
+  mutate(filing_rate = (filings_observed/renting_hh)*100,
+         threat_rate = (hh_threat_observed/renting_hh)*100)
+```
+
+Now I will get a few demographic and economic variables for the county from the ACS.
+
+```{r}
+# getting demographic data back to 2010
+library(tidycensus)
+census_api_key("1ce78664b294208f88f53c49746f378a51893b62", overwrite = TRUE)
+
+# acs data - getting data through 2021 in case I find more recent eviction data
+years <- lst(2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021)
+
+dp10 <- load_variables(2010, "acs5", cache = TRUE)
+
+race_acs <- c(
+  total_pop = "B03002_001",
+  total_hhs = "B25003_001",
+  owner_hhs = "B25003_002",
+  renter_hhs = "B25003_003",
+  black_hhs = "B25003B_001",
+  black_owner = "B25003B_002",
+  black_renter = "B25003B_003",
+  asian_hhs = "B25003D_001",
+  asian_owner = "B25003D_002",
+  asian_renter = "B25003D_003",
+  latino_hhs = "B25003I_001",
+  latino_owner = "B25003I_002",
+  latino_renter = "B25003I_003",
+  nhw_hhs = "B25003H_001",
+  nhw_owner = "B25003H_002",
+  nhw_renter = "B25003H_003",
+  u_own = "B25106_002",
+  own_lt20k = "B25106_003",
+  own_rb_lt20k = "B25106_006",
+  own_2035k = "B25106_007",
+  own_rb_2035k = "B25106_010",
+  own_3550k = "B25106_011",
+  own_rb_3550k = "B25106_014",
+  own_5075k = "B25106_015",
+  own_rb_5075k = "B25106_018",
+  own_75kpls = "B25106_019",
+  own_rb_75kpls = "B25106_022",
+  own_0k = "B25106_023",
+  u_rent = "B25106_024",
+  rent_lt20k = "B25106_025",
+  rent_rb_lt20k = "B25106_028",
+  rent_2035k = "B25106_029",
+  rent_rb_2035k = "B25106_032",
+  rent_3550k = "B25106_033",
+  rent_rb_3550k = "B25106_036",
+  rent_5075k = "B25106_037",
+  rent_rb_5075k = "B25106_040",
+  rent_75kpls = "B25106_041",
+  rent_rb_75kpls = "B25106_044",
+  rent_0k = "B25106_045",
+  rent_norent = "B25106_046",
+  med_hh_inc = "B25119_001",
+  med_hh_inc_own = "B25119_002",
+  med_hh_inc_rent = "B25119_003"
+)
+
+acs_county <- map_dfr(
+  years,
+  ~ get_acs(
+    geography = "county",
+    variables = race_acs,
+    state = "CA",
+    year = .x,
+    survey = "acs5"
+  ),
+  .id = "year"
+)
+
+# deleting moe from acs dataframe
+acs_county %<>%
+  select(-c(moe))
+
+# transforming
+acs_wide_cty <- acs_county %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+```
+
+Now finalizing the data set to join with evictions data.
+
+```{r}
+# computing the share of renter (and homeowner) households who are cost burdened
+acs_wide_cty %<>%
+  mutate(cb_owner = own_0k + own_rb_lt20k + own_rb_2035k + own_rb_3550k + own_rb_5075k + own_rb_75kpls,
+         p_cb_owner = cb_owner/(u_own),
+         cb_renter = rent_0k + rent_rb_lt20k + rent_rb_2035k + rent_rb_3550k + rent_rb_5075k + rent_rb_75kpls,
+         p_cb_renter = cb_renter/(u_rent-rent_norent),
+         prent = renter_hhs/total_hhs,
+         pown = owner_hhs/total_hhs,
+         prent_blk = black_renter/black_hhs,
+         prent_his = latino_renter/latino_hhs,
+         prent_nhw = nhw_renter/nhw_hhs,
+         prent_asian = asian_renter/asian_hhs)
+
+# reducing cols for simplicity
+acs_wide_cty <- acs_wide_cty[c(1:18,30,43:57)]
+
+# saving the census data
+save(acs_wide_cty, file = "data/acs_county_data.RData")
+
+# merging with county evictions data
+county %<>% rename(GEOID = fips_county)
+county$GEOID <- as.character(county$GEOID)
+county$year <- as.character(county$year)
+county %<>%
+  mutate(GEOID = paste0("0", GEOID))
+
+county %<>%
+  select(-state)
+county %<>%
+  select(-fips_state)
+
+df <- left_join(x = county,
+                y = acs_wide_cty,
+                by = c("year", "GEOID"))
+
+df %>%
+  arrange(desc(filing_rate))
+
+df %>%
+  subset(county %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County")) %>%
+  ggplot(aes(x = year, y = filing_rate)) +
+  geom_bar(stat="identity") +
+  ggtitle("Eviction Filing Rate by County, 2010-2017") +
+  xlab("Year") + ylab("Eviction Filing Rate per 100 Renting Households") +
+  facet_wrap(~ county) +
+  theme_classic()
+
+df %>%
+  subset(county %in% c("Solano County")) %>%
+  ggplot(aes(x = year, y = filing_rate)) +
+  geom_bar(stat="identity") +
+  ggtitle("Eviction Filing Rate in Solano County, 2010-2017") +
+  xlab("Year") + ylab("Eviction Filing Rate per 100 Renting Households") +
+  theme_classic()
+
+df %>%
+  subset(county %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County")) %>%
+  select(county,year,filing_rate,p_cb_renter,cb_renter,renter_hhs,prent)
+
+df %>%
+  subset(county %in% c("Solano County")) %>%
+  ggplot(aes(x = year, y = p_cb_renter)) +
+  geom_bar(stat="identity") +
+  ggtitle("Rent Burdened Households in Solano County, 2010-2017") +
+  xlab("Year") + ylab("% of Renters Spending More Than 30% of Income on Rent") +
+  facet_wrap(~ county) +
+  theme_classic()
+```
+
+Now preparing the census tract data file.
+
+```{r}
+acs_tract <- map_dfr(
+  years,
+  ~ get_acs(
+    geography = "tract",
+    variables = race_acs,
+    state = "CA",
+    year = .x,
+    survey = "acs5"
+  ),
+  .id = "year"
+)
+
+# deleting moe from acs dataframe
+acs_tract %<>%
+  select(-c(moe))
+
+# transforming
+acs_wide_trct <- acs_tract %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+
+# saving the census data
+save(acs_wide_trct, file = "data/acs_tract_data.RData")
+```
+
+Now getting the measures of interest and joining with tract-level eviction dataset.
+
+```{r}
+# computing the share of renter (and homeowner) households who are cost burdened
+acs_wide_trct %<>%
+  mutate(cb_owner = own_0k + own_rb_lt20k + own_rb_2035k + own_rb_3550k + own_rb_5075k + own_rb_75kpls,
+         p_cb_owner = cb_owner/(u_own),
+         cb_renter = rent_0k + rent_rb_lt20k + rent_rb_2035k + rent_rb_3550k + rent_rb_5075k + rent_rb_75kpls,
+         p_cb_renter = cb_renter/(u_rent-rent_norent),
+         prent = renter_hhs/total_hhs,
+         pown = owner_hhs/total_hhs,
+         prent_blk = black_renter/black_hhs,
+         prent_his = latino_renter/latino_hhs,
+         prent_nhw = nhw_renter/nhw_hhs,
+         prent_asian = asian_renter/asian_hhs)
+
+# reducing cols for simplicity
+acs_wide_trct <- acs_wide_trct[c(1:18,30,43:57)]
+
+# saving the census data
+save(acs_wide_trct, file = "data/acs_tract_data.RData")
+
+# merging with county evictions data
+tract %<>% rename(GEOID = fips)
+tract$GEOID <- as.character(tract$GEOID)
+tract$year <- as.character(tract$year)
+tract %<>%
+  mutate(GEOID = paste0("0", GEOID))
+
+tract %<>%
+  select(-state)
+
+df_tract <- left_join(x = tract,
+                y = acs_wide_trct,
+                by = c("year", "GEOID"))
+
+df_tract %>%
+  arrange(desc(filing_rate))
+
+df_tract %>%
+  subset(county=="Solano County") %>%
+  arrange(desc(filing_rate)) %>%
+  select(tract, county, year, filings, filing_rate, p_cb_renter, prent_blk, prent_his)
+```
+
+Saving out final county-level and tract-level data files.
+
+```{r}
+# data was showing up weird in Tablaeu so getting rid of NANs
+df_tract %<>% mutate_all(~ifelse(is.nan(.), NA, .))
+
+# county first
+save(df, file = "data/df_county.RData")
+write_csv(df, file = "data/df_county.csv", na = "")
+
+# now tract
+save(df_tract, file = "data/df_tract.RData")
+write_csv(df_tract, file = "data/df_tract.csv", na = "")
+```
