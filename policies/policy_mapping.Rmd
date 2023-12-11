@@ -1,0 +1,109 @@
+---
+title: "Solano County Policy Mapping"
+author: "Angel Mendiola Ross"
+date: "2023-10-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/')
+```
+
+### Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  tigris, #mapping
+  sf, #mapping
+  readxl #to read excel files
+)
+```
+
+In this file, I prepare maps of policies related to structural racism in Solano County.
+
+```{r}
+# Load the shapefile
+cities_shp <- st_read("../policies/shapefiles/cities_in_solano_county.shp")
+cities_shp %<>% rename(Jurisdiction = NAME)
+
+# load the csv
+df <- read_csv("../policies/data/Solano County SR Policies - Sheet1.csv")
+
+# joining
+df_shp <- left_join(x = df,
+                    y = cities_shp,
+                    by = "Jurisdiction")
+df_shp %<>% rename(Adopted = `Adopted?`)
+
+# load solano county shapefile
+sc_shp <- st_read("../policies/shapefiles/solano_county.shp")
+
+
+#install.packages("tmap")
+#install.packages('terra', repos='https://rspatial.r-universe.dev')
+library(tmap)
+
+# district map in tmap
+df_dis <- filter(df_shp, Policy=="District Elections?" & !is.na(GEOID))
+df_dis <- st_sf(df_dis)
+
+tm_shape(df_dis) + 
+  tm_polygons(col = "Adopted", palette = c("darkgreen", "red")) +
+  tm_text("Jurisdiction", size = 2/3) +
+  tm_layout(legend.position = c("left", "top"), 
+            title= 'Municipalities That Adopted District Elections', 
+            title.position = c('left', 'top'))
+
+tm_shape(df_dis) + 
+  tm_polygons(col = "Adopted", palette = (RColorBrewer::brewer.pal(2,"PiYG"))) +
+  tm_text("Jurisdiction", size = 2/3) +
+  tm_layout(legend.position = c("left", "top"), 
+            title= 'Municipalities That Adopted District Elections', 
+            title.position = c('left', 'top'))
+
+
+df_shp %>%
+  filter(Policy=="District Elections?" & !is.na(GEOID)) %>%
+  st_sf() %>%
+  ggplot() + 
+  geom_sf(aes(fill = Adopted)) +
+  scale_fill_manual(values = c("#fdae6b","#9ecae1"), name="Adopted") +
+  geom_sf_label(aes(label = Jurisdiction), label.size = NA, alpha = 0.1) +
+  geom_sf(data = sc_shp, color = "black", fill = NA, lwd = 1) +
+  ggtitle("Municipalities That Adopted District Elections") +
+  theme_classic()
+
+df_shp %>%
+  filter(Policy=="Housing Element in compliance with state law?" & !is.na(GEOID)) %>%
+  st_sf() %>%
+  ggplot() + 
+  geom_sf(aes(fill = Adopted)) +
+  scale_fill_manual(values = c("#fdae6b","#9ecae1"), name="Adopted") +
+  geom_sf_label(aes(label = Jurisdiction), label.size = NA, alpha = 0.1) +
+  geom_sf(data = sc_shp, color = "black", fill = NA, lwd = 1) +
+  theme_classic()
+
+df_shp %>%
+  filter(Policy=="Just cause for evicition law?" & !is.na(GEOID)) %>%
+  st_sf() %>%
+  ggplot() + 
+  geom_sf(aes(fill = Adopted)) +
+  scale_fill_manual(values = c("#fdae6b","#9ecae1"), name="Adopted") +
+  geom_sf_label(aes(label = Jurisdiction), label.size = NA, alpha = 0.1) +
+  geom_sf(data = sc_shp, color = "black", fill = NA, lwd = 1) +
+  theme_classic()
+
+
+  
+
+```

@@ -1,0 +1,432 @@
+---
+title: "Analyzing Arrest Data"
+author: "Angel Mendiola Ross"
+date: '2023-08-15'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/open_justice/')
+```
+
+## Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  data.table, #fread() 
+  foreign, #load data types including stata .dta files 
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  tigris, #mapping
+  sf, #mapping
+  readxl #to read excel files
+)
+```
+
+In this file, I conduct the following analyses of the Solano County arrests data:
+- In order to see how police spending and the number of sworn officers relates to drops in arrests in the post-Prop 47 period, I compute county-wide measures of police spending and sworn officers.
+- A stacked bar chart of total arrests by type over time to see how they have changed.
+
+## 1.0 Preprocessing Data on Sworn Officers
+
+The following dataset comes from the California Local Government Finance Almanac <https://www.californiacityfinance.com/#SPENDING> at californiacityfinance.com.
+Source: California State Controller, Cities Annual Reports
+
+Sheriff data comes from the same source but a different file that includes sworn and non-sworn, jail and non-jail employees, by local agency from 1991-2018. Source: California Department of Justice.
+
+```{r}
+# load police employees dataset - Sheet 1 is sworn officers
+emp <- read_excel("data/raw/ca_city_finance/PoliceEmployees19p.xlsx", na = "NR", sheet = 1)
+
+# assigning row 7 as column names
+df <- emp                         # Duplicate data frame
+colnames(df) <- emp[7, ]          # Convert first row to header
+df                                # Print updated data frame
+
+# removing first 7 rows
+df <- df[-c(1:7), ]
+
+# changing the date from fiscal year to the second year (eg from 2011-12 to 2012)
+emp <- df[-c(1,2)]
+x <- colnames(emp)
+n_last <- 2 # getting last two characters
+colnames(emp) <- paste(substr(x, 1, 2),substr(x, nchar(x) - n_last + 1, nchar(x)), sep = "")
+x <- colnames(emp)
+emp <- df[c(1,2)]
+y <- colnames(emp)
+z <- append(y,x)
+colnames(df) <- z
+
+# switching data from wide to long
+officers <- pivot_longer(df, -c(City, County), values_to = "sworn_officers", names_to = "year")
+officers %<>% rename(city_name = City,
+                     CTY_NAME = County)
+
+# save cleaned sworn officer data
+officers$sworn_officers <- as.numeric(officers$sworn_officers)
+#replace 1900 with 2000
+officers['year'][officers['year'] == "1900"] <- "2000"
+save(officers, file = "data/officers.RData")
+```
+
+Next step us to compute county-level spending measures for police that combine all municipal spending with county-level spending.
+
+California CPI data from the DIR
+<https://www.dir.ca.gov/oprl/CPI/EntireCCPI.PDF>
+
+```{r}
+# loading city and county spending data
+load("../finance/data/city_df.RData")
+load("../finance/data/county_df.RData")
+
+# getting a county-level measure of police spending from city-level data
+city_police <- city_df %>%
+  group_by(CTY_NAME,year) %>%
+  summarise(city_police_spending = sum(police_total, na.rm = TRUE),
+            n_cities = n()) %>%
+  ungroup()
+
+city_police %<>% rename(county_name = CTY_NAME)
+
+# joining with county-level data
+dt <- county_df[c(1,3,22:24,27:39)]
+police_spending <- left_join(x = dt,
+          y = city_police,
+          by = c("county_name", "year"))
+# combined spending var
+police_spending %<>%
+  mutate(total_police_spending = police + city_police_spending)
+
+# prepping sworn officers to join with police df
+city_officers <- officers %>%
+  group_by(CTY_NAME,year) %>%
+  summarise(city_sworn_officers = sum(sworn_officers, na.rm = TRUE),
+            n_cities = n()) %>%
+  ungroup()
+
+# getting sheriffs deputies numbers
+dep <- read_excel("data/raw/ca_city_finance/CrimJusticeEmployees18p.xlsx", na = "NR", sheet = 2)
+
+# getting sheriff's deputies first
+sheriff <- dep %>%
+  subset(grepl("Sheriff's",Agency))
+sheriff %<>%
+  mutate(sworn_total = `sworn-jail`+`sworn-non-jail`)
+
+# adjusting name
+sheriff$county_name <- unlist(lapply(strsplit(as.character(sheriff$Agency), " Co."), '[[', 1))
+
+# fixing SF
+sheriff %<>%
+  mutate(county_name = ifelse(county_name=="San Francisco Sheriff's Department", "San Francisco", county_name))
+sheriff %<>% rename(year = YEAR)
+sheriff <- sheriff[c(9,1,4,6,8)]
+
+# combining with city data
+city_officers %<>% rename(county_name = CTY_NAME)
+city_officers$year <- as.numeric(city_officers$year)
+
+sworn_officers <- left_join(x = city_officers,
+                            y = sheriff,
+                            by = c("county_name","year"))
+
+# merging into a single df of both spending and sworn officers
+data <- left_join(x = police_spending,
+                  y = sworn_officers,
+                  by = c("county_name", "year"))
+
+# getting sworn officers total
+data %<>%
+  mutate(total_officers = city_sworn_officers+sworn_total)
+
+# adjusting for inflation by bringing in CA CPI
+cpi <- data.frame (year  = c(2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015, 2014, 2013, 2012,
+                             2011, 2010, 2009, 2008, 2007, 2006, 2005, 2004, 2003),
+                  cpi = c(319.224, 297.371, 285.315, 280.638, 272.510, 262.802, 255.303,
+                          249.666, 246.055, 241.623, 238.155, 232.930, 226.919, 224.110,
+                          224.807, 217.424, 210.5, 202.6, 195.4, 190.4)
+                  )
+cpi %<>%
+  mutate(cpi2021 = 297.371)
+
+data <- left_join(x = data,
+                  y = cpi,
+                  by = "year")
+
+data %<>%
+  mutate(total_spending_infl_adj = (cpi2021/cpi)*total_police_spending)
+
+data %>%
+  select(county_name,year,total_police_spending,cpi,total_spending_infl_adj)
+
+```
+Before joining with arrests data, I want to see how spending and total officers shifted around the time that Prop 47 was passed.
+
+```{r}
+data %>%
+  subset(county_name=="Solano" & year>2004) %>%
+  select(county_name,year,total_police_spending,sworn_total)
+
+# plotting spending
+data %>%
+  subset(county_name=="Solano" & year>2004) %>%
+  ggplot(aes(x = year, y = total_police_spending)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=250000000, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Total Police Spending, Solano County") +
+  xlab("Year") + ylab("Total Police Spending") +
+  theme_classic()
+
+data %>%
+  subset(county_name=="Solano" & year>2004) %>%
+  ggplot(aes(x = year, y = total_spending_infl_adj)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=260000000, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Total Inflation-Adjusted Police Spending, Solano County") +
+  xlab("Year") + ylab("Total Police Spending (Inflation-Adjusted)") +
+  theme_classic()
+
+data %>%
+  subset(county_name=="Solano" & year>2004) %>%
+  ggplot(aes(x = year, y = total_officers)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=550, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Total Sworn Officers, Solano County") +
+  xlab("Year") + ylab("Total Sworn Officers") +
+  theme_classic()
+```
+
+Now I will bring in arrests data to:
+- see the relationship between arrests and police spending/staffing.
+- generate a breakdown of arrest types over time.
+
+```{r}
+# loading arrests data
+load("data/arrests.RData")
+
+# getting arrests by race (eg not distinguishing by age or gender)
+arrests_by_race <- arrests %>%
+  group_by(COUNTY,YEAR,RACE) %>%
+  summarise(violent = sum(VIOLENT),
+            property = sum(PROPERTY),
+            felony_drug = sum(F_DRUGOFF),
+            felony_sex = sum(F_SEXOFF),
+            felony_other = sum(F_ALLOTHER),
+            felonies = sum(F_TOTAL),
+            misdemeanors = sum(M_TOTAL),
+            status = sum(S_TOTAL))
+
+# and arrest totals
+arrests <- arrests_by_race %>%
+  group_by(COUNTY,YEAR) %>%
+  summarise(violent = sum(violent),
+            property = sum(property),
+            felony_drug = sum(felony_drug),
+            felony_sex = sum(felony_sex),
+            felony_other = sum(felony_other),
+            felonies = sum(felonies),
+            misdemeanors = sum(misdemeanors),
+            status = sum(status))
+
+# adjusting name
+arrests$county_name <- unlist(lapply(strsplit(as.character(arrests$COUNTY), " County"), '[[', 1))
+arrests <- arrests[c(11,2:10)]
+arrests %<>% rename(year = YEAR)
+
+# joining with data 
+data <- left_join(x = data,
+                  y = arrests,
+                  by = c("county_name", "year"))
+
+reg <- lm(felony_drug ~ log(total_police_spending) + log(total_pop) + total_officers + as.factor(county_name) + as.factor(year), data = data)
+summary(reg)
+
+```
+
+Generating stacked bar charts of offense type.
+
+```{r}
+load("../data/data.RData")
+library(scales)
+df_long <- pivot_longer(data, violent:property, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name=="Solano"), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Arrests in Solano County: 2003-2021") +
+   scale_fill_discrete(name = "Type of Arrest") +
+  xlab("Year") + ylab("Total Arrests") +
+  theme_classic()
+
+df_long <- pivot_longer(data, felony_drug:felony_other, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name=="Solano"), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Felony Arrests in Solano County: 2003-2021") +
+  xlab("Year") + ylab("Total Felony Arrests") +
+  scale_fill_discrete(name = "Type of Arrest", labels=c('Felony Drug Offense', 'Other Felony Offense', 'Felony Sex Offense')) +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=3270, label="Prop 47", angle=90, color = "grey") +
+  theme_classic()
+
+df_long <- pivot_longer(data, felonies:misdemeanors, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name=="Solano"), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Arrests in Solano County: 2003-2021") +
+   scale_fill_discrete(name = "Type of Arrest") +
+  xlab("Year") + ylab("Total Arrests") +
+  scale_y_continuous(label=comma) +
+  theme_classic()
+
+df_long %>%
+  subset(county_name=="Solano") %>%
+  select(county_name,year,arrest_type,arrests)
+```
+
+How does Solano County compare to other counties? First I will normalize by population to account for this by computing rates per 100,000 residents.
+
+```{r}
+data %<>%
+  mutate(violent_rate = (violent/total_pop)*100000,
+         property_rate = (property/total_pop)*100000,
+         f_drug_rate = (felony_drug/total_pop)*100000,
+         f_sex_rate = (felony_sex/total_pop)*100000,
+         f_other_rate = (felony_other/total_pop)*100000,
+         felony_rate = (felonies/total_pop)*100000,
+         misdemeanor_rate = (misdemeanors/total_pop)*100000
+         )
+
+df_long <- pivot_longer(data, violent_rate:property_rate, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name %in% c("Solano", "Alameda", "Contra Costa", "San Mateo")), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Arrest Rates: 2003-2021") +
+   scale_fill_discrete(name = "Type of Arrest", labels=c('Property', 'Violent')) +
+  xlab("Year") + ylab("Arrests per 100,000 Residents") +
+  facet_wrap(~ county_name) +
+  theme_classic()
+
+df_long <- pivot_longer(data, f_drug_rate:f_other_rate, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name %in% c("Solano", "Alameda", "Contra Costa", "San Mateo")), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Felony Arrest Rates: 2003-2021") +
+  xlab("Year") + ylab("Felony Arrest Rates per 100,000 Residents") +
+  scale_fill_discrete(name = "Type of Arrest", labels=c('Felony Drug Offense', 'Other Felony Offense', 'Felony Sex Offense')) +
+  facet_wrap(~ county_name) +
+  theme_classic()
+
+df_long <- pivot_longer(data, felony_rate:misdemeanor_rate, names_to = "arrest_type", values_to = "arrests")
+ggplot(subset(df_long, county_name %in% c("Solano", "Alameda", "Contra Costa", "San Mateo")), aes(fill=arrest_type, y=arrests, x=year)) + 
+    geom_bar(position="stack", stat="identity") +
+    ggtitle("Arrest Rates: 2003-2021") +
+   scale_fill_discrete(name = "Type of Arrest", labels=c('Felonies', 'Misdemeanors')) +
+  xlab("Year") + ylab("Arrest Rates per 100,000 Residents") +
+  scale_y_continuous(label=comma) +
+  facet_wrap(~ county_name) +
+  theme_classic()
+
+# saving out data and arrests_by_race files
+#save(data, file = "data/data.RData")
+#save(arrests_by_race, file = "data/arrests_by_race.RData")
+
+```
+
+Getting other felony arrests by race and age...
+
+```{r}
+# reloading arrests data
+load("../data/arrests.RData")
+load("../data/arrests_by_race.RData")
+
+#solano only in 2014 for felony drug arrests
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2014 & GENDER=="Male" & RACE != "Other" & AGE_GROUP %in% c("Under 18", "18 to 19", "20 to 29")) %>%
+  ggplot(aes(x = AGE_GROUP, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men in Solano County in 2014") +
+  xlab("Age") + ylab("Felony Drug Arrest Rate per 100,000") +
+  scale_y_continuous(label=comma) +
+  theme_classic()
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2014 & GENDER=="Male" & RACE != "Other") %>%
+  ggplot(aes(x = AGE_GROUP, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men in Solano County in 2014") +
+  xlab("Age") + ylab("Arrest Rate per 100,000") +
+  scale_y_continuous(label=comma) +
+  theme_classic()
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2014 & GENDER=="Male" & RACE != "Other") %>%
+  ggplot(aes(x = AGE_GROUP, y = F_DRUGOFF, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrests for Felony Drug Offenses, Men in Solano County in 2014") +
+  xlab("Age") + ylab("Total Felony Drug Arrests") +
+  theme_classic()
+
+#solano only
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_other_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=4000, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Arrest Rates for Other Felony Offenses, Men Ages 20 to 29, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# compared to other counties
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "Contra Costa County", "San Mateo County") & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_other_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Other Felony Offenses, Men Ages 20 to 29, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  facet_wrap(~ COUNTY) +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  select(COUNTY,YEAR,RACE,f_other_rate)
+
+# looking at main age groups
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2021 & GENDER=="Male" & AGE_GROUP %in% c("Under 18", "18 to 19","20 to 29") & RACE != "Other") %>%
+  ggplot(aes(x = AGE_GROUP, y = f_other_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Other Felony Offenses, Men in Solano County in 2021") +
+  xlab("Age Group") + ylab("Arrest Rate per 100,000") +
+  scale_y_continuous(label=comma) +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2021 & GENDER %in% c("Male") & AGE_GROUP != "70 and over" & RACE != "Other") %>%
+  ggplot(aes(x = AGE_GROUP, y = F_ALLOTHER, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrests for Other Felony Offenses, Men in Solano County in 2021") +
+  xlab("Age Group") + ylab("Total Arrests") +
+  scale_y_continuous(label=comma) +
+  theme_classic()
+
+# 1600 arrests for other felony offenses in 2021
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2021 & GENDER %in% c("Male") & RACE == "Black")
+
+# 671 of those arrested were Black (42%) while 13% of the population was Black
+arrests_by_race %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2021) %>%
+  select(COUNTY,YEAR,RACE,felony_other)
+arrests %>%
+  subset(COUNTY %in% c("Solano County") & YEAR==2021) %>%
+  select(COUNTY,YEAR,felony_other)
+  
+```
+
+

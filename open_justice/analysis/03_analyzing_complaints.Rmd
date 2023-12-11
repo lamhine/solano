@@ -1,0 +1,256 @@
+---
+title: "Analyzing Civilian Complaints Against Police"
+author: "Angel Mendiola Ross"
+date: '2023-08-25'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/open_justice/')
+```
+
+## Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  data.table, #fread() 
+  foreign, #load data types including stata .dta files 
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  tigris, #mapping
+  sf, #mapping
+  readxl #to read excel files
+)
+```
+
+In this file, I clean and analyze data from Open Justice <https://openjustice.doj.ca.gov> on Civilian Complaints Against Peace Officers. The goal will be to create a municipal-level dataset and a county-level one that aggregates complaints from municipal and county agencies.
+
+```{r}
+# load data
+dt <- read_excel("data/raw/CCAPO_2016-2022_Agency.xlsx")
+names(dt)
+
+cc <- dt[c(1:4,22,40,58,76,94,5:21,30,31,36,37,48,49,54,55,66,67,72,73,84,85,90,91,102,103,108,109)]
+
+# dividing dataset and getting city and county names
+city <- cc %>%
+  subset(!grepl("County", AgencyName))
+
+# dropping university police from dataset
+city %<>% subset(!grepl("University", AgencyName)) 
+city %<>% subset(!grepl("Unified", AgencyName)) 
+city %<>% subset(!grepl("Transit", AgencyName))
+city %<>% subset(!grepl("Sheriff's", AgencyName))
+city %<>% subset(!grepl("Sheriff's", AgencyName))
+city %<>% subset(!grepl("College", AgencyName))
+city %<>% subset(!grepl("Hospital", AgencyName))
+city %<>% subset(!grepl("Park", AgencyName))
+city %<>% subset(!grepl("USD", AgencyName))
+city %<>% subset(!grepl("District", AgencyName))
+city %<>% subset(!grepl("Railway", AgencyName))
+city %<>% subset(!grepl("Expo", AgencyName))
+city %<>% subset(!grepl("School", AgencyName))
+city %<>% subset(!grepl("CC", AgencyName))
+city %<>% subset(!grepl("Airport", AgencyName))
+city %<>% subset(grepl("Police", AgencyName) | grepl("PD", AgencyName))
+
+city %>% subset(!grepl("Police", AgencyName))
+
+# adding city name to join with demographics & county data
+load("../finance/data/city_df.RData")
+data <- city_df[c(1,2,35,37:39,42:54)]
+
+city$city_name <- unlist(lapply(strsplit(as.character(city$AgencyName), " Police"), '[[', 1))
+city %<>%
+  mutate(city_name = ifelse(AgencyName=="Palos Verdes Estates PD",city_name=="Palos Verdes Estates",city_name))
+city$ComplaintYear <- as.numeric(city$ComplaintYear)
+city %<>% rename(year = ComplaintYear)
+
+# joining with demog data
+complaints_city <- left_join(x = city,
+                             y = data,
+                             by = c("city_name", "year"))
+
+complaints_city <- complaints_city[c(48,47,3,1,2,4:46,52:64,49:51)]
+
+# generating complaints per 100,000 people
+complaints_city %<>%
+  mutate(complaints_per_cap = (TotalComplaintsReported/total_pop)*100000,
+         racial_prof_per_cap = (TotalRacialProfilingComplaintsReported/total_pop)*100000)
+
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  arrange(desc(racial_prof_per_cap)) %>%
+  select(city_name,year,TotalComplaintsReported,TotalRacialProfilingComplaintsReported,TotalRacialProfilingComplaintsSustained,racial_prof_per_cap,complaints_per_cap)
+
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  arrange(desc(TotalComplaintsUnfounded))
+
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = complaints_per_cap)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap( ~ city_name) +
+  xlab("Year") + ylab("Complaints Reported per 100,000 People") +
+  theme_classic()
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = TotalComplaintsReported)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap( ~ city_name) +
+  xlab("Year") + ylab("Total Complaints Reported") +
+  theme_classic()
+
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = racial_prof_per_cap)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap( ~ city_name) +
+  xlab("Year") + ylab("Racial Profiling Complaints Reported per 100,000 People") +
+  theme_classic()
+complaints_city %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = TotalRacialProfilingComplaintsReported)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap( ~ city_name) +
+  xlab("Year") + ylab("Total Racial Profiling Complaints Reported") +
+  theme_classic()
+
+# by race/ethnicity
+complaints_city %>%
+  subset(CTY_NAME %in% c("Solano", "Alameda", "Contra Costa", "San Mateo")) %>%
+  ggplot(aes(x = pnhb, y = TotalRacialProfilingComplaintsReported, color = CTY_NAME)) +
+  geom_point(size = 2) +
+  xlab("Percent Black") + ylab("Total Racial Profiling Complaints Reported") +
+  facet_wrap(~ year) +
+  theme_classic()
+complaints_city %>%
+  subset(CTY_NAME %in% c("Solano", "Alameda", "Contra Costa", "San Mateo")) %>%
+  ggplot(aes(x = pnhb, y = racial_prof_per_cap, color = CTY_NAME)) +
+  geom_point(size = 2) +
+  xlab("Percent Black") + ylab("Racial Profiling Complaints Reported Per 100,000") +
+  facet_wrap(~ year) +
+  theme_classic()
+
+complaints_city %>%
+  mutate(pct_sustained = TotalComplaintsSustained/TotalComplaintsReported) %>%
+  subset(CTY_NAME %in% c("Solano", "Alameda", "Contra Costa", "San Mateo") & pct_sustained<1) %>%
+  ggplot(aes(x = pnhb, y = pct_sustained, color = CTY_NAME)) +
+  geom_point(size = 2) +
+  xlab("Percent Black") + ylab("Share of Total Complaints Sustained") +
+  facet_wrap(~ year) +
+  theme_classic()
+
+```
+
+Now cleaning county-level data
+
+```{r}
+# getting county-level data
+county <- cc %>%
+  subset(grepl("Sheriff's", AgencyName) | grepl("County", AgencyName))
+county$county_name <- unlist(lapply(strsplit(as.character(county$AgencyName), " County"), '[[', 1))
+county %<>%
+  mutate(county_name = ifelse(!grepl("County", AgencyName),
+                       unlist(lapply(strsplit(as.character(county$AgencyName), " Sheriff's"), '[[', 1)),
+                              county_name))
+county <- county[c(47,1:46)]
+
+# getting county totals
+county$ComplaintYear <- as.numeric(county$ComplaintYear)
+county %<>% rename(year = ComplaintYear)
+county_totals <- county %>%
+  group_by(county_name, year) %>%
+  summarise(TotalComplaintsReported_cty = sum(TotalComplaintsReported),
+            TotalComplaintsSustained_cty = sum(TotalComplaintsSustained),
+            TotalRacialProfilingReported_cty = sum(TotalRacialProfilingComplaintsReported),
+            TotalRacialProfilingSustained_cty = sum(TotalRacialProfilingComplaintsSustained)) %>%
+  ungroup()
+  
+
+```
+
+Getting Combined Dataset to Show All Complaints by County
+
+```{r}
+city_totals <- complaints_city %>% 
+  group_by(CTY_NAME, year) %>%
+  summarise(TotalComplaintsReported_city = sum(TotalComplaintsReported),
+            TotalComplaintsSustained_city = sum(TotalComplaintsSustained),
+            TotalRacialProfilingReported_city = sum(TotalRacialProfilingComplaintsReported),
+            TotalRacialProfilingSustained_city = sum(TotalRacialProfilingComplaintsSustained)) %>%
+  ungroup()
+city_totals %<>% rename(county_name = CTY_NAME)
+totals <- left_join(x = county_totals,
+                    y = city_totals,
+                    by = c("county_name", "year"))
+
+# changing NA to 0
+totals$TotalComplaintsReported_city %<>% replace_na(0)
+totals$TotalComplaintsSustained_city %<>% replace_na(0)
+totals$TotalRacialProfilingReported_city %<>% replace_na(0)
+totals$TotalRacialProfilingSustained_city %<>% replace_na(0)
+
+totals %<>%
+  mutate(TotalComplaintsReported = TotalComplaintsReported_cty + TotalComplaintsReported_city,
+         TotalComplaintsSustained = TotalComplaintsSustained_cty + TotalComplaintsSustained_city,
+         TotalRacialProfilingReported = TotalRacialProfilingReported_cty + TotalRacialProfilingReported_city,
+         TotalRacialProfilingSustained = TotalRacialProfilingSustained_cty + TotalRacialProfilingSustained_city)
+
+# getting county demog
+load("data/data.RData")
+demog <- data[c(1,2,6:18)]
+
+totals <- totals[c(1,2,11:14)]
+
+# joining with complaints
+totals <- left_join(x = totals,
+                    y = demog,
+                    by = c("county_name", "year"))
+
+totals %<>%
+  mutate(complaints_per_cap = (TotalComplaintsReported/total_pop)*100000,
+         racial_prof_per_cap = (TotalRacialProfilingReported/total_pop)*100000)
+
+# compared to other counties
+totals %>%
+  subset(county_name %in% c("Solano", "Alameda", "Contra Costa", "San Mateo") & year<2022) %>%
+  ggplot(aes(x = year, y = complaints_per_cap)) +
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Year") + ylab("Total Complaints per 100,000") +
+  facet_wrap(~ county_name) +
+  theme_classic()
+
+totals %>%
+  subset(county_name %in% c("Solano", "Alameda", "Contra Costa", "San Mateo") & year<2022) %>%
+  ggplot(aes(x = year, y = racial_prof_per_cap)) +
+  geom_bar(position="dodge", stat="identity") +
+  xlab("Year") + ylab("Racial Profiling Complaints per 100,000") +
+  facet_wrap(~ county_name) +
+  theme_classic()
+
+totals %>%
+
+```
+
+Saving out data files
+
+```{r}
+# county sums
+save(totals, file = "data/complaints_county_total.RData")
+# city df
+save(complaints_city, file = "data/complaints_city.RData")
+# county df
+save(county, file = "data/complaints_county.RData")
+```
+

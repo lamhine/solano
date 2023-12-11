@@ -1133,6 +1133,7 @@ fines %<>%
 
 fines %<>%
   mutate(penalties_rev = NA,
+         `Vehicle Code Fines_General Revenues` = ifelse(is.na(`Vehicle Code Fines_General Revenues`),0,`Vehicle Code Fines_General Revenues`),
          vehicle_fines = `Vehicle Code Fines_General Revenues`+`Vehicle Code Fines_Functional Revenues`)
 
 fines_vars <- c("entity_id",
@@ -1417,7 +1418,8 @@ city_df %<>%
          vehicle_fines_per_cap = vehicle_fines/total_pop)
 
 # save file
-write_csv(city_df, file = "data/city_fin_data.csv", na = "")
+#write_csv(city_df, file = "data/city_fin_data.csv", na = "")
+#save(city_df, file = "data/city_df.RData")
 
 # load county data
 load("data/county_df.RData")
@@ -1429,7 +1431,7 @@ county_df %<>%
          vehicle_fines_share_tot_rev = vehicle_fines/total_revenues,
          vehicle_fines_per_cap = vehicle_fines/total_pop)
 
-# adding expenditures shares abd per cap
+# adding expenditures shares and per cap
 county_df %<>%
   mutate(police_share = police/total_expenditures,
          corrections_share = corrections/total_expenditures,
@@ -1440,7 +1442,106 @@ county_df %<>%
          edu_per_1000 = (edu/total_pop)*1000)
 
 # save file
-write_csv(county_df, file = "data/county.csv", na = "")
+#write_csv(county_df, file = "data/county.csv", na = "")
 
 ```
 
+## July 20, 2023 Addition
+
+After our meeting with the Solano County team, there was interest in assessing whether we could tease out changes in spending following demographic changes. Going to look into that here.
+
+Cities that have seen a large shift in demographics from 2009 to 2021.
+- Dublin
+- California City
+- Dixon
+- Rio Vista
+
+```{r}
+# seeing which cities and counties saw the largest demographic changes
+city_df %>%
+  subset(year %in% c(2009,2021)) %>%
+  group_by(city_name) %>%
+  mutate(pnhb_diff = c(NA, diff(pnhb)),
+         pnhw_diff = c(NA, diff(pnhw)),
+         phis_diff = c(NA,diff(phis)))%>%
+  ungroup() %>%
+  select(city_name,CTY_NAME,year,pnhb_diff,pnhw_diff,phis_diff,pnhw) %>%
+  arrange((pnhw_diff))
+
+# percent white went up
+city_df %>%
+  subset(city_name %in% c("Dixon", "East Palo Alto")) %>%
+  ggplot(aes(x = year, y = fines_share, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  theme_classic() +
+  xlab("Year") + ylab("Share of Revenues from Fines and Fees")
+city_df %>%
+  subset(city_name %in% c("Dixon", "East Palo Alto")) %>%
+  ggplot(aes(x = year, y = pnhw, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  theme_classic() +
+  xlab("Year") + ylab("Percent White")
+
+# percent white went down
+city_df %>%
+  subset(city_name %in% c("Dublin", "Rio Vista")) %>%
+  ggplot(aes(x = year, y = parksrec_share, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  theme_classic() +
+  xlab("Year") + ylab("Share of Expenditures on Parks and Recreation")
+city_df %>%
+  subset(city_name %in% c("Dublin", "Rio Vista")) %>%
+  ggplot(aes(x = year, y = pnhw, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  theme_classic() +
+  xlab("Year") + ylab("Percent White")
+```
+
+Also going to make a few more charts on fines and fees as this may be used in a factor analysis in the future.
+
+```{r}
+# no scientific notation
+library(scales)
+
+# total fines and fees
+city_df %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = total_fines_rev, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  scale_y_continuous(labels = label_comma()) +
+  theme_classic() +
+  xlab("Year") + ylab("Total Revenue from Fines and Fees")
+
+# vehicle fines and fees
+city_df %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = vehicle_fines, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2003:2021) +
+  scale_y_continuous(labels = label_comma()) +
+  theme_classic() +
+  xlab("Year") + ylab("Total Revenue from Vehicle Fines")
+
+# per capita total fines and fees
+city_df %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = fines_per_cap, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2009:2021, limits = c(2009,2021)) +
+  theme_classic() +
+  xlab("Year") + ylab("Total Revenue from Fines and Fees Per Capita")
+
+# per capita vehicle fines and fees
+city_df %>%
+  subset(CTY_NAME=="Solano") %>%
+  ggplot(aes(x = year, y = vehicle_fines_per_cap, group = city_name, color = city_name)) + 
+  geom_point() + geom_line() + 
+  scale_x_continuous(breaks=2009:2021, limits = c(2009,2021)) +
+  theme_classic() +
+  xlab("Year") + ylab("Total Revenue from Vehicle Fines Per Capita")
+```

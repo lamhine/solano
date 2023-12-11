@@ -71,6 +71,14 @@ dp10 <- load_variables(2010, "acs5", cache = TRUE)
 
 race_acs <- c(
   total_pop = "B03002_001",
+  nhw = "B03002_003",
+  nhb = "B03002_004",
+  nhaian = "B03002_005",
+  nha = "B03002_006",
+  nhnh = "B03002_007",
+  nhsor = "B03002_008",
+  nhmixed = "B03002_009",
+  his = "B03002_012",
   total_hhs = "B25003_001",
   owner_hhs = "B25003_002",
   renter_hhs = "B25003_003",
@@ -152,10 +160,15 @@ acs_wide_cty %<>%
          prent_blk = black_renter/black_hhs,
          prent_his = latino_renter/latino_hhs,
          prent_nhw = nhw_renter/nhw_hhs,
-         prent_asian = asian_renter/asian_hhs)
+         prent_asian = asian_renter/asian_hhs,
+         pnhb = nhb/total_pop,
+         pnhw = nhw/total_pop,
+         phis = his/total_pop,
+         papi = (nha+nhnh)/total_pop,
+         ppoc = 1-pnhw)
 
 # reducing cols for simplicity
-acs_wide_cty <- acs_wide_cty[c(1:18,30,43:57)]
+acs_wide_cty <- acs_wide_cty[c(1:26,51:53,56:70)]
 
 # saving the census data
 save(acs_wide_cty, file = "data/acs_county_data.RData")
@@ -175,6 +188,9 @@ county %<>%
 df <- left_join(x = county,
                 y = acs_wide_cty,
                 by = c("year", "GEOID"))
+
+df %<>%
+  mutate(filing_rate = (filings_observed/renter_hhs)*100)
 
 df %>%
   arrange(desc(filing_rate))
@@ -252,10 +268,15 @@ acs_wide_trct %<>%
          prent_blk = black_renter/black_hhs,
          prent_his = latino_renter/latino_hhs,
          prent_nhw = nhw_renter/nhw_hhs,
-         prent_asian = asian_renter/asian_hhs)
+         prent_asian = asian_renter/asian_hhs,
+         pnhb = nhb/total_pop,
+         pnhw = nhw/total_pop,
+         phis = his/total_pop,
+         papi = (nha+nhnh)/total_pop,
+         ppoc = 1-pnhw)
 
 # reducing cols for simplicity
-acs_wide_trct <- acs_wide_trct[c(1:18,30,43:57)]
+acs_wide_trct <- acs_wide_trct[c(1:26,51:53,56:70)]
 
 # saving the census data
 save(acs_wide_trct, file = "data/acs_tract_data.RData")
@@ -278,22 +299,76 @@ df_tract %>%
   arrange(desc(filing_rate))
 
 df_tract %>%
+  subset(county=="Solano County" & year==2014) %>%
+  arrange(desc(pnhw)) %>%
+  select(tract, county, year, filings, filing_rate, filing_rate_2, p_cb_renter, prent_blk, prent_his, pnhb, phis, pnhw, prent)
+
+df %>%
   subset(county=="Solano County") %>%
-  arrange(desc(filing_rate)) %>%
-  select(tract, county, year, filings, filing_rate, p_cb_renter, prent_blk, prent_his)
+  arrange(desc(filings_observed)) %>%
+  select(county, year, filings_observed, filing_rate, p_cb_renter, prent_blk, prent_his, pnhb, phis, pnhw, prent)
+
+df_tract %>%
+  subset(county=="Solano County" & is.na(filings)) # 48 tract-years
 ```
 
 Saving out final county-level and tract-level data files.
 
 ```{r}
-# data was showing up weird in Tablaeu so getting rid of NANs
+# data was showing up weird in Tableau so getting rid of NANs
 df_tract %<>% mutate_all(~ifelse(is.nan(.), NA, .))
+
+load("data/df_county.RData")
 
 # county first
 save(df, file = "data/df_county.RData")
 write_csv(df, file = "data/df_county.csv", na = "")
 
 # now tract
+# save(df_tract, file = "data/df_tract.RData")
+# write_csv(df_tract, file = "data/df_tract.csv", na = "")
+
+# loading data and recomputing filing rate like I do for the county data
+load("data/df_tract.RData")
+df_tract %<>%
+  mutate(filing_rate_2 = (filings/renter_hhs)*100)
+
+df_tract %>%
+  subset(county=="Solano County") %>%
+  ggplot(aes(x = pnhb, y = filing_rate)) + 
+  geom_point() +
+  theme_classic() +
+  xlab("Percent Black") + ylab("Filing Rate per 100 Renting Households")
+
+df_tract %>%
+  subset(county=="Solano County") %>%
+  ggplot(aes(x = phis, y = filing_rate)) + 
+  geom_point() +
+  theme_classic() +
+  xlab("Percent Latino") + ylab("Filing Rate per 100 Renting Households")
+
+df_tract %>%
+  subset(county=="Solano County") %>%
+  ggplot(aes(x = pnhw, y = filing_rate)) + 
+  geom_point() +
+  theme_classic() +
+  xlab("Percent White") + ylab("Filing Rate per 100 Renting Households")
+  
+
+df_tract %>%
+  select(tract,year,filings,renter_hhs,filing_rate,filing_rate_2)
+
+tract <- df_tract %>%
+  subset(county=="Solano County")
+cor.test(tract$filing_rate,tract$pnhb, use = "pairwise.complete.obs")
+cor.test(tract$filing_rate,tract$phis, use = "pairwise.complete.obs")
+cor.test(tract$filing_rate,tract$pnhw, use = "pairwise.complete.obs")
+
+# saving
 save(df_tract, file = "data/df_tract.RData")
 write_csv(df_tract, file = "data/df_tract.csv", na = "")
+
+tract %>%
+  arrange(desc(med_hh_inc_rent)) %>%
+  select(tract,year,filings,filing_rate,med_hh_inc_rent,pnhb,pnhw,phis)
 ```

@@ -1,0 +1,598 @@
+---
+title: "Analyzing Arrests Data"
+author: "Angel Mendiola Ross"
+date: '2023-07-25'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/angelmr/solano_sr/open_justice/')
+```
+
+## Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  data.table, #fread() 
+  foreign, #load data types including stata .dta files 
+  magrittr, #%<>% operator
+  skimr, #for summerising
+  tidyverse,
+  readxl #to read excel files
+)
+```
+
+## Discrepancies in Arrests
+
+In this file, I parse through arrests data in Solano County by race to see how arrests for different types of offenses vary.
+
+```{r}
+# load data
+dt <- read_excel("data/raw/arrests_data_open_justice.xlsx")
+
+# looking just at solano county
+sc <- dt %>%
+  subset(COUNTY=="Solano County")
+
+# crime was highest in 1980s for violent and property crimes
+
+# let's look at felony drug offenses
+sc %>%
+  subset(YEAR>1990 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = F_DRUGOFF, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=210, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Arrests for Felony Drug Offenses for Men Ages 20 to 29, Solano County") +
+  xlab("Year") + ylab("Felony Drug Offenses") +
+  theme_classic()
+
+sc %>%
+  subset(YEAR>2014 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = F_DRUGOFF, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrests for Felony Drug Offenses for Men Ages 20 to 29 Post-Prop 47, Solano County") +
+  xlab("Year") + ylab("Felony Drug Offenses") +
+  theme_classic()
+
+```
+
+I want to normalize by population so I will have to get the following race, gender, age break downs:
+
+Males and Females
+Black, White, Hispanic, Other
+Age Groups:
+- Under 18
+- 18 to 19
+- 20 to 29
+- 30 to 39
+- 40 to 69
+- 70 and over
+
+```{r}
+# getting demographic data back to 2010
+library(tidycensus)
+census_api_key("1ce78664b294208f88f53c49746f378a51893b62", overwrite = TRUE)
+
+# ACS variables
+v21 <- load_variables(2021, "acs5", cache = TRUE)
+
+# getting vars of interest
+# NOTE: because of differing age breaks in the crime data, 
+# I will focus on young people (ages <30)
+race_acs <- c(
+  m_total = "B01001_002",
+  f_total = "B01001_026",
+  m_under5 = "B01001_003",
+  m_5t9 = "B01001_004",
+  m_10t14 = "B01001_005",
+  m_15t17 = "B01001_006",
+  m_18t19 = "B01001_007",
+  m_20 = "B01001_008",
+  m_21 = "B01001_009",
+  m_22t24 = "B01001_010",
+  m_25t29 = "B01001_011",
+  f_under5 = "B01001_027",
+  f_5t9 = "B01001_028",
+  f_10t14 = "B01001_029",
+  f_15t17 = "B01001_030",
+  f_18t19 = "B01001_031",
+  f_20 = "B01001_032",
+  f_21 = "B01001_033",
+  f_22t24 = "B01001_034",
+  f_25t29 = "B01001_035",
+  m_under5_blk = "B01001B_003",
+  m_5t9_blk = "B01001B_004",
+  m_10t14_blk = "B01001B_005",
+  m_15t17_blk = "B01001B_006",
+  m_18t19_blk = "B01001B_007",
+  m_20t24_blk = "B01001B_008",
+  m_25t29_blk = "B01001B_009",
+  f_under5_blk = "B01001B_018",
+  f_5t9_blk = "B01001B_019",
+  f_10t14_blk = "B01001B_020",
+  f_15t17_blk = "B01001B_021",
+  f_18t19_blk = "B01001B_022",
+  f_20t24_blk = "B01001B_023",
+  f_25t29_blk = "B01001B_024",
+  m_under5_nhw = "B01001H_003",
+  m_5t9_nhw = "B01001H_004",
+  m_10t14_nhw = "B01001H_005",
+  m_15t17_nhw = "B01001H_006",
+  m_18t19_nhw = "B01001H_007",
+  m_20t24_nhw = "B01001H_008",
+  m_25t29_nhw = "B01001H_009",
+  f_under5_nhw = "B01001H_018",
+  f_5t9_nhw = "B01001H_019",
+  f_10t14_nhw = "B01001H_020",
+  f_15t17_nhw = "B01001H_021",
+  f_18t19_nhw = "B01001H_022",
+  f_20t24_nhw = "B01001H_023",
+  f_25t29_nhw = "B01001H_024",
+  m_under5_his = "B01001I_003",
+  m_5t9_his = "B01001I_004",
+  m_10t14_his = "B01001I_005",
+  m_15t17_his = "B01001I_006",
+  m_18t19_his = "B01001I_007",
+  m_20t24_his = "B01001I_008",
+  m_25t29_his = "B01001I_009",
+  f_under5_his = "B01001I_018",
+  f_5t9_his = "B01001I_019",
+  f_10t14_his = "B01001I_020",
+  f_15t17_his = "B01001I_021",
+  f_18t19_his = "B01001I_022",
+  f_20t24_his = "B01001I_023",
+  f_25t29_his = "B01001I_024"
+)
+
+# 2020 isn't in the 1 year data so getting 5-year estimates for this year
+acs2020 <- get_acs(geography = "county",
+    variables = race_acs,
+    state = "CA",
+    year = 2020,
+    survey = "acs5")
+
+# deleting moe from acs dataframe
+acs2020 %<>%
+  select(-c(moe))
+
+# transforming
+acs2020 <- acs2020 %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+
+acs2020 %<>%
+  mutate(
+    f_under18 = f_under5 + f_5t9 + f_10t14 + f_15t17,
+    f_20t29 = f_20 + f_21 + f_22t24 + f_25t29,
+    m_under18 = m_under5 + m_5t9 + m_10t14 + m_15t17,
+    m_20t29 = m_20 + m_21 + m_22t24 + m_25t29,
+    f_under18_nhw = f_under5_nhw+f_5t9_nhw+f_10t14_nhw+f_15t17_nhw,
+    f_20t29_nhw = f_20t24_nhw + f_25t29_nhw,
+    m_under18_nhw = m_under5_nhw+m_5t9_nhw+m_10t14_nhw+m_15t17_nhw,
+    m_20t29_nhw = m_20t24_nhw + m_25t29_nhw,
+    f_under18_blk = f_under5_blk+f_5t9_blk+f_10t14_blk+f_15t17_blk,
+    f_20t29_blk = f_20t24_blk + f_25t29_blk,
+    m_under18_blk = m_under5_blk+m_5t9_blk+m_10t14_blk+m_15t17_blk,
+    m_20t29_blk = m_20t24_blk + m_25t29_blk,
+    f_under18_his = f_under5_his+f_5t9_his+f_10t14_his+f_15t17_his,
+    f_20t29_his = f_20t24_his + f_25t29_his,
+    m_under18_his = m_under5_his+m_5t9_his+m_10t14_his+m_15t17_his,
+    m_20t29_his = m_20t24_his + m_25t29_his,
+    f_under18_oth = f_under18-(f_under18_nhw+f_under18_blk+f_under18_his),
+    m_under18_oth = m_under18-(m_under18_nhw+m_under18_blk+m_under18_his),
+    f_20t29_oth = f_20t29-(f_20t29_nhw+f_20t29_blk+f_20t29_his),
+    m_20t29_oth = m_20t29-(m_20t29_nhw+m_20t29_blk+m_20t29_his),
+    f_18t19_oth = f_18t19-(f_18t19_nhw+f_18t19_blk+f_18t19_his),
+    m_18t19_oth = m_18t19-(m_18t19_nhw+m_18t19_blk+m_18t19_his)
+  )
+
+# doing 1 year ACS to go back to 2005
+years <- lst(2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2021)
+acs1 <- map_dfr(
+  years,
+  ~ get_acs(
+    geography = "county",
+    variables = race_acs,
+    state = "CA",
+    year = .x,
+    survey = "acs1"
+  ),
+  .id = "year"
+)
+
+# deleting moe from acs dataframe
+acs1 %<>%
+  select(-c(moe))
+
+# transforming
+acs1_wide <- acs1 %>%
+                    distinct() %>%
+                    spread(variable, estimate)
+
+acs1_wide %<>%
+  mutate(
+    f_under18 = f_under5 + f_5t9 + f_10t14 + f_15t17,
+    f_20t29 = f_20 + f_21 + f_22t24 + f_25t29,
+    m_under18 = m_under5 + m_5t9 + m_10t14 + m_15t17,
+    m_20t29 = m_20 + m_21 + m_22t24 + m_25t29,
+    f_under18_nhw = f_under5_nhw+f_5t9_nhw+f_10t14_nhw+f_15t17_nhw,
+    f_20t29_nhw = f_20t24_nhw + f_25t29_nhw,
+    m_under18_nhw = m_under5_nhw+m_5t9_nhw+m_10t14_nhw+m_15t17_nhw,
+    m_20t29_nhw = m_20t24_nhw + m_25t29_nhw,
+    f_under18_blk = f_under5_blk+f_5t9_blk+f_10t14_blk+f_15t17_blk,
+    f_20t29_blk = f_20t24_blk + f_25t29_blk,
+    m_under18_blk = m_under5_blk+m_5t9_blk+m_10t14_blk+m_15t17_blk,
+    m_20t29_blk = m_20t24_blk + m_25t29_blk,
+    f_under18_his = f_under5_his+f_5t9_his+f_10t14_his+f_15t17_his,
+    f_20t29_his = f_20t24_his + f_25t29_his,
+    m_under18_his = m_under5_his+m_5t9_his+m_10t14_his+m_15t17_his,
+    m_20t29_his = m_20t24_his + m_25t29_his,
+    f_under18_oth = f_under18-(f_under18_nhw+f_under18_blk+f_under18_his),
+    m_under18_oth = m_under18-(m_under18_nhw+m_under18_blk+m_under18_his),
+    f_20t29_oth = f_20t29-(f_20t29_nhw+f_20t29_blk+f_20t29_his),
+    m_20t29_oth = m_20t29-(m_20t29_nhw+m_20t29_blk+m_20t29_his),
+    f_18t19_oth = f_18t19-(f_18t19_nhw+f_18t19_blk+f_18t19_his),
+    m_18t19_oth = m_18t19-(m_18t19_nhw+m_18t19_blk+m_18t19_his)
+  )
+
+# joining 2020 data
+acs2020 %<>%
+  mutate(year="2020")
+acs2020 <- acs2020[c(87,1:86)]
+
+acs_dt <- rbind(acs2020,acs1_wide)
+acs_dt %<>%
+  arrange(GEOID,year)
+
+names(acs_dt)
+acs <- acs_dt[c(2,3,1,13:15,44:46,70:87)]
+
+acs_m_nhw <- acs %>%
+  select(GEOID, NAME, year, starts_with("m_") & ends_with("_nhw"))
+
+test <- pivot_longer(acs_m_nhw, cols = starts_with("m_"), names_to = "AGE_GROUP", values_to = "Population")
+
+m_nhw <- test %>%
+  mutate(GENDER = "Male",
+         RACE = "White",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_m_his <- acs %>%
+  select(GEOID, NAME, year, starts_with("m_") & ends_with("_his"))
+
+test <- pivot_longer(acs_m_his, cols = starts_with("m_"), names_to = "AGE_GROUP", values_to = "Population")
+
+m_his <- test %>%
+  mutate(GENDER = "Male",
+         RACE = "Hispanic",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_m_blk <- acs %>%
+  select(GEOID, NAME, year, starts_with("m_") & ends_with("_blk"))
+
+test <- pivot_longer(acs_m_blk, cols = starts_with("m_"), names_to = "AGE_GROUP", values_to = "Population")
+
+m_blk <- test %>%
+  mutate(GENDER = "Male",
+         RACE = "Black",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_m_oth <- acs %>%
+  select(GEOID, NAME, year, starts_with("m_") & ends_with("_oth"))
+
+test <- pivot_longer(acs_m_oth, cols = starts_with("m_"), names_to = "AGE_GROUP", values_to = "Population")
+
+m_oth <- test %>%
+  mutate(GENDER = "Male",
+         RACE = "Other",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+# NOW FEMALES
+acs_f_nhw <- acs %>%
+  select(GEOID, NAME, year, starts_with("f_") & ends_with("_nhw"))
+
+test <- pivot_longer(acs_f_nhw, cols = starts_with("f_"), names_to = "AGE_GROUP", values_to = "Population")
+
+f_nhw <- test %>%
+  mutate(GENDER = "Female",
+         RACE = "White",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_f_his <- acs %>%
+  select(GEOID, NAME, year, starts_with("f_") & ends_with("_his"))
+
+test <- pivot_longer(acs_f_his, cols = starts_with("f_"), names_to = "AGE_GROUP", values_to = "Population")
+
+f_his <- test %>%
+  mutate(GENDER = "Female",
+         RACE = "Hispanic",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_f_blk <- acs %>%
+  select(GEOID, NAME, year, starts_with("f_") & ends_with("_blk"))
+
+test <- pivot_longer(acs_f_blk, cols = starts_with("f_"), names_to = "AGE_GROUP", values_to = "Population")
+
+f_blk <- test %>%
+  mutate(GENDER = "Female",
+         RACE = "Black",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+acs_f_oth <- acs %>%
+  select(GEOID, NAME, year, starts_with("f_") & ends_with("_oth"))
+
+test <- pivot_longer(acs_f_oth, cols = starts_with("f_"), names_to = "AGE_GROUP", values_to = "Population")
+
+f_oth <- test %>%
+  mutate(GENDER = "Female",
+         RACE = "Other",
+         AGE_GROUP = ifelse(grepl("under18", AGE_GROUP),"Under 18",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("20t29", AGE_GROUP),"20 to 29",AGE_GROUP),
+         AGE_GROUP = ifelse(grepl("18t19", AGE_GROUP),"18 to 19",AGE_GROUP))
+
+# merging into the same data frame
+data <- rbind(m_nhw,m_blk,m_his,m_oth,f_nhw,f_blk,f_his,f_oth)
+data %<>%
+  arrange(GEOID,year,AGE_GROUP)
+
+# prepping for join with arrests data
+names(dt)
+names(data)
+data %<>% rename(COUNTY = NAME,
+                 YEAR = year)
+data %<>%
+  mutate(COUNTY = gsub(', California','',COUNTY))
+data$YEAR <- as.numeric(data$YEAR)
+data %<>% select(-GEOID)
+
+# joining into new dataframe with arrests data
+arrests <- left_join(x = dt,
+                     y = data,
+                     by = c("YEAR","COUNTY","GENDER","RACE","AGE_GROUP"))
+```
+
+Now that I have population data from 2005 to 2021, I will compute arrest rates per 100,000 people and make some new charts for Solano County.
+
+```{r}
+# computing arrest rates & assigning as missing as rates where the denominator (population) is <50
+arrests %<>%
+  mutate(violent_rate = ifelse(Population>=50,(VIOLENT/Population)*100000,NA),
+         prop_rate = ifelse(Population>=50,(PROPERTY/Population)*100000,NA),
+         f_drug_rate = ifelse(Population>=50,(F_DRUGOFF/Population)*100000,NA),
+         f_sex_rate = ifelse(Population>=50,(F_SEXOFF/Population)*100000,NA),
+         f_other_rate = ifelse(Population>=50,(F_ALLOTHER/Population)*100000,NA),
+         felony_rate = ifelse(Population>=50,(F_TOTAL/Population)*100000,NA),
+         misd_rate = ifelse(Population>=50,(M_TOTAL/Population)*100000,NA),
+         status_rate = ifelse(Population>=50,(S_TOTAL/Population)*100000,NA)
+         )
+
+
+# saving data
+save(arrests, file = "data/arrests.RData")
+write_csv(arrests, file = "data/arrests.csv")
+```
+
+Plotting and analyzing data
+
+```{r}
+# plotting arrest rates for felony drug offenses
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=4500, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men Ages 20 to 29, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="Under 18" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=500, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Youth Under 18, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & AGE_GROUP=="18 to 19" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  geom_vline(xintercept = 2014, linetype="dotted", color = "grey", size = 1) +
+  annotate("text", x=2013.5, y=3500, label="Prop 47", angle=90, color = "grey") +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men Ages 18 to 19, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# comparing to other counties
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2015 & GENDER=="Male" & AGE_GROUP=="20 to 29" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap(~ COUNTY) +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men Ages 20 to 29, Solano County") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2015 & GENDER=="Male" & AGE_GROUP=="18 to 19" & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_drug_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  facet_wrap(~ COUNTY) +
+  ggtitle("Arrest Rates for Felony Drug Offenses, Men Ages 20 to 29") +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2017 & GENDER=="Male" & AGE_GROUP=="18 to 19" & RACE != "Other") %>%
+  select(COUNTY,YEAR,AGE_GROUP,RACE,F_TOTAL,Population,felony_rate)
+
+```
+
+What are the most common offenses in Solano County post-2004?
+Misdemeanor arrests: 1k+ misdemeanor arrests for white men ages 40 to 69.
+Felony arrests: 700+ for Black men ages 20 to 29.
+Felony drug arrests: 200+ for Black men ages 20 to 29.
+Felony sex arrests: 20+ arrests for white men ages 40 to 69.
+All other felony arrests: 200+ for Black men 20 to 29 and 30 to 39.
+Property: 200+ property crime arrests for Black young men under 18.
+Violent: 200+ for Black men ages 20 to 29 and under 18.
+Arrests for status offenses: 90 for Latino young men under 18.
+
+```{r}
+library(scales) # adding commas to axes
+
+arrests_solano <- arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004)
+arrests_solano %>%
+  subset(GENDER=="Male") %>%
+  arrange(desc(misd_rate)) %>%
+  select(YEAR, GENDER, RACE, AGE_GROUP,COUNTY,misd_rate,Population)
+
+# ordering age group
+arrests$AGE_GROUP <- factor(arrests$AGE_GROUP,      # Reordering group factor levels
+                         levels = c("Under 18", "18 to 19", "20 to 29", "30 to 39", "40 to 69", "70 and over"))
+
+# misdemeanor arrest rates
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = misd_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Misdemeanors, Men in Solano County") +
+  facet_wrap(~ AGE_GROUP) +
+  scale_y_continuous(labels = comma) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="20 to 29") %>%
+  ggplot(aes(x = YEAR, y = misd_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Misdemeanors, Men Ages 20 to 29") +
+  facet_wrap(~ COUNTY) +
+  scale_y_continuous(labels = comma) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# felony arrest rates
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = felony_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Felonies, Men in Solano County") +
+  facet_wrap(~ AGE_GROUP) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# compare felony arrest rates with other counties
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="18 to 19") %>%
+  ggplot(aes(x = YEAR, y = felony_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Felonies, Men Ages 18 to 19") +
+  facet_wrap(~ COUNTY) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  scale_y_continuous(labels = comma) +
+  theme_classic()
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="20 to 29") %>%
+  ggplot(aes(x = YEAR, y = felony_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Felonies, Men Ages 20 to 29") +
+  facet_wrap(~ COUNTY) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  scale_y_continuous(labels = comma) +
+  theme_classic()
+
+# felony sex offense arrest rates
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = f_sex_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Felony Sex Offense Arrest Rates, Men in Solano County") +
+  facet_wrap(~ AGE_GROUP) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# violent crime arrest
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = violent_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Violent Crimes, Men in Solano County") +
+  facet_wrap(~ AGE_GROUP) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# violent crime arrest comparison
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="18 to 19") %>%
+  ggplot(aes(x = YEAR, y = violent_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Violent Crimes, Men Ages 18 to 19") +
+  facet_wrap(~ COUNTY) +
+  scale_y_continuous(labels = comma) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# property crime arrest
+arrests %>%
+  subset(COUNTY=="Solano County" & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other") %>%
+  ggplot(aes(x = YEAR, y = prop_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Property Crimes, Men in Solano County") +
+  facet_wrap(~ AGE_GROUP) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+# property crime arrest comparison
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="18 to 19") %>%
+  ggplot(aes(x = YEAR, y = prop_rate, fill = RACE)) +
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Arrest Rates for Property Crimes, Men Ages 18 to 19") +
+  facet_wrap(~ COUNTY) +
+  xlab("Year") + ylab("Arrest Rate per 100,000") +
+  theme_classic()
+
+```
+
+Which offenses have the greatest racial disparities?
+
+```{r}
+data %>%
+  subset(GENDER=="Male" & AGE_GROUP=="18 to 19" & COUNTY=="Solano County") %>%
+  select(YEAR, GENDER, RACE, AGE_GROUP,COUNTY,Population)
+
+arrests %>%
+  subset(COUNTY %in% c("Solano County", "Alameda County", "San Mateo County", "Contra Costa County") & YEAR>2004 & GENDER=="Male" & !is.na(Population) & RACE != "Other" & AGE_GROUP=="18 to 19") %>%
+  select(COUNTY,YEAR,RACE,violent_rate,Population) %>%
+  arrange(desc(violent_rate))
+
+```
+
