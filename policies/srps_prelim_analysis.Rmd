@@ -1,0 +1,559 @@
+---
+title: "Solano County Policy Mapping"
+author: "Tracy Lam-Hine and Angel Mendiola Ross"
+date: "2024-01-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/Users/lamhine/Documents/GitHub/solano_sr')
+```
+
+### Set up
+
+```{r}
+### Clear global environment
+rm(list=ls())
+
+library(pacman)
+pacman::p_unload(all)
+
+pacman::p_load(
+  tidyverse, #dplyr, readr, etc.
+  googlesheets4, #access google sheets files
+  tidycensus, #for ACS data
+  tigris, #mapping
+  sf, #mapping
+  tmap, #mapping
+  geepack, #gee analysis
+)
+
+options(scipen=999) #turn off scientific notation
+```
+
+In this file, we analyze associations between policy counts and a measure of structural racism in Solano County.
+
+First, let's sum the number of policies for each jurisdiction by policy type (progressive/ambiguous/regressive).
+
+```{r}
+# load policy database from Google Sheets
+# focusing on sub-county level for now, filter out county-level policies
+df_policies <- read_sheet("https://docs.google.com/spreadsheets/d/1DDof9ap4oZnS1GTSrFFBFN7Nz8zIXa_jTKc3IfmQZHU/edit#gid=0") %>% 
+  filter(jurisdiction != "Solano County")
+
+# recode `adopted` into binary 1,0
+df_policies <- df_policies %>% 
+  mutate(adopted = case_when(
+    adopted == "Yes" ~ 1,
+    TRUE ~ 0)
+    )
+
+# count number of policies in each type
+df_policies %>% 
+  select(policy, type) %>% 
+  distinct() %>% 
+  group_by(type) %>% 
+  summarize(n = n()) %>% View()
+# progressive = 12; regressive = 1
+
+# create policy index 
+df_policies <- df_policies %>% 
+  mutate(
+    type_num = case_when(
+      type == "Progressive" ~ 1, 
+      TRUE ~ -1),
+    prod = adopted * type_num
+    )
+
+# create jurisdiction-level policy score
+pol_summ <- df_policies %>% 
+  group_by(jurisdiction) %>% 
+  summarize(index = sum(prod)) %>% 
+  rename(PlaceName = jurisdiction)
+```
+
+The structural racism measure, which is composed of five unidimensional measures: the Dissimilarity Index (block groups within tracts), and tract-level Black/White ratios in graduation rates, employment rates, and homeownership rates, and tract-level Index of Concentration at the Extremes. These are the relevant ACS variables for each unidimensional measure:
+
+-   Segregation: `B03002_003` and `B02001_003` (count of White and Black residents)
+
+-   Education:
+
+    -   White NH college graduation rate ages 25+ = (`C15002H_006` + `C15002H_011`) / `C15002H_001`
+    -   Black college graduation rate ages 25+ = (`C15002B_006` + `C15002B_011`) / `C15002B_001`
+
+-   Employment:
+
+    -   White NH employment rate among civilians in labor force ages 16-64 = (`C23002H_007` + `C23002H_020`) / (`C23002H_006` + `C23002H_019`)
+    -   Black employment rate among civilians in labor force ages 16-64 = (`C23002B_007` + `C23002B_020`) / (`C23002B_006` + `C23002B_019`)
+
+-   Income:
+
+    -   Count of White NH households with income \$100k+ = `B19001H_014` + `B19001H_015` + `B19001H_016` + `B19001H_017`
+    -   Count of Black households with income under \$25k = `B19001B_002` + `B19001B_003` + `B19001B_004` + `B19001B_005`
+
+-   [Homeownership](https://www.census.gov/quickfacts/fact/note/US/HSG445221#:~:text=The%20homeownership%20rate%20is%20computed,occupied%20housing%20units%20or%20households.&text=This%20Fact%20is%20based%20on,by%20the%20U.S.%20Census%20Bureau.):
+
+    -   White NH homeownership rate = `B25003H_002` / `B25003H_001`
+
+    -   Black homeownership rate = `B25003B_002` / `B25003B_001`
+
+First, we calculate dissimilarity index (tracts vs block groups)
+
+```{r}
+#get population counts for tracts and block groups
+race_pop_tract <- 
+  get_acs(
+    geography = "tract",
+    #variables = c("B03002_003", "B02001_003"),
+    variables = c("B03002_003", "B03002_004", "B03002_014"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  rename(
+    tract_geoid = GEOID,
+    tract_name = NAME,
+    tract_est = estimate,
+    tract_moe = moe
+  )
+
+race_pop_cbg <- 
+  get_acs(
+    geography = "cbg",
+    #variables = c("B03002_003", "B02001_003"),
+    variables = c("B03002_003", "B03002_004", "B03002_014"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  rename(
+    cbg_geoid = GEOID,
+    cbg_name = NAME,
+    cbg_est = estimate,
+    cbg_moe = moe
+  ) %>% 
+  mutate(
+    tract_geoid = str_sub(cbg_geoid, end = -2)
+  )
+
+# joining
+joined <- left_join(
+  race_pop_cbg,
+  race_pop_tract) %>% 
+  mutate(
+    variable = case_when(
+      variable == "B03002_003" ~ "white",
+      variable == "B03002_004" ~ "black_nh",
+      variable == "B03002_014" ~ "black_h",
+    )
+  )
+
+# calculate wi/WT and bi/BT proportions for each cbg
+joined <- joined %>% 
+  mutate(prop = cbg_est / tract_est) %>% 
+  mutate_at(vars(prop), ~replace(., is.nan(.), 0))
+
+# roll up variables to tract level
+joined <- joined %>% 
+  dplyr::select(-c("cbg_est", "cbg_moe", "tract_est", "tract_moe")) %>% 
+  pivot_wider(
+    names_from = variable,
+    names_glue = "{variable}_prop",
+    values_from = prop
+  )
+
+# sum black_nh and black_h proportions
+joined <- joined %>%
+  mutate(black_prop = black_nh_prop + black_h_prop) %>% 
+  dplyr::select(-c("black_nh_prop", "black_h_prop"))
+
+# calculate wi/WT - bi/BT for each tract
+joined <- joined %>% mutate(prop_diff = abs(white_prop - black_prop))
+
+# roll up to PUMA level and calculate dissimilarity index
+joined_summ <- joined %>% 
+  group_by(tract_geoid) %>% 
+  summarize(dissim_index = 1/2 * sum(prop_diff)) %>% 
+  rename(GEOID = tract_geoid)
+
+# remove excess files
+rm(race_pop_tract, race_pop_cbg, joined)
+```
+
+Now we calculate education inequality.
+
+```{r}
+# first pull in the relevant variables into a df called edu_tract
+edu_tract <- 
+  get_acs(
+    geography = "tract",
+    variables = c("C15002H_006", "C15002H_011", "C15002H_001",
+                  "C15002B_006", "C15002B_011", "C15002B_001"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  dplyr::select(-c("NAME", "moe"))
+
+# pivot from long to wide format for calculations within each PUMA
+edu_tract <- edu_tract %>% 
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+
+# calculate the white-black ratio in college graduation rates
+edu_tract <- edu_tract %>% 
+  mutate(
+    edu_dim = 
+      ((C15002H_006 + C15002H_011) / C15002H_001) / 
+      ((C15002B_006 + C15002B_011) / C15002B_001)
+    ) %>% 
+  mutate_at(vars(edu_dim), ~replace(., is.infinite(.), 1)) %>%
+  mutate_at(vars(edu_dim), ~replace(., is.nan(.), 0)) %>% 
+  dplyr::select(GEOID, edu_dim)
+
+# join values into joined_summ
+joined_summ <- left_join(joined_summ, edu_tract) 
+
+rm(edu_tract)
+```
+
+Next we calculate employment inequality.
+
+```{r}
+# first pull in the relevant variables into a df called emp_tract
+emp_tract <- 
+  get_acs(
+    geography = "tract",
+    variables = c("C23002H_007", "C23002H_020", "C23002H_006", "C23002H_019",
+                  "C23002B_007", "C23002B_020", "C23002B_006", "C23002B_019"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  dplyr::select(-c("NAME", "moe"))
+
+# pivot from long to wide format for calculations within each PUMA
+emp_tract <- emp_tract %>% 
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+
+# calculate the white-black ratio in employment rates
+emp_tract <- emp_tract %>% 
+  mutate(
+    emp_dim = 
+      ((C23002H_007 + C23002H_020) / (C23002H_006 + C23002H_019)) / 
+      ((C23002B_007 + C23002B_020) / (C23002B_006 + C23002B_019)) 
+    ) %>% 
+  mutate_at(vars(emp_dim), ~replace(., is.infinite(.), 1)) %>%
+  mutate_at(vars(emp_dim), ~replace(., is.nan(.), 0)) %>% 
+  dplyr::select(GEOID, emp_dim)
+
+# join values into joined_summ
+joined_summ <- left_join(joined_summ, emp_tract)
+
+rm(emp_tract)
+```
+
+Fourth, we calculate income inequality
+
+```{r}
+# first pull in the relevant variables into a df called ice_tract
+ice_tract <- 
+  get_acs(
+    geography = "tract",
+    variables = c("B19001H_014", "B19001H_015", "B19001H_016", "B19001H_017", "B19001H_001",
+                  "B19001B_002", "B19001B_003", "B19001B_004", "B19001B_005", "B19001B_001"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  dplyr::select(-c("NAME", "moe"))
+
+# pivot from long to wide format for calculations within each PUMA
+ice_tract <- ice_tract %>% 
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+
+# calculate the ICE
+ice_tract <- ice_tract %>% 
+  mutate(
+    ice_dim = 
+      ((B19001H_014 + B19001H_015 + B19001H_016 + B19001H_017) - 
+         (B19001B_002 + B19001B_003 + B19001B_004 + B19001B_005)) /
+      (B19001H_001 + B19001B_001)
+    ) %>% 
+  mutate_at(vars(ice_dim), ~replace(., is.infinite(.), 1)) %>%
+  mutate_at(vars(ice_dim), ~replace(., is.nan(.), 0)) %>% 
+  dplyr::select(GEOID, ice_dim)
+
+# join values into joined_summ
+joined_summ <- left_join(joined_summ, ice_tract)
+
+rm(ice_tract)
+```
+
+Finally we calculate homeownership inequality.
+
+```{r}
+# first pull in the relevant variables into a df called home_tract
+home_tract <- 
+  get_acs(
+    geography = "tract",
+    variables = c("B25003H_002", "B25003H_001", "B25003B_002", "B25003B_001"),
+    state = "06",
+    county = "Solano",
+    survey = "acs5",
+    year = 2022) %>% 
+  dplyr::select(-c("NAME", "moe"))
+
+# pivot from long to wide format for calculations within each PUMA
+home_tract <- home_tract %>% 
+  pivot_wider(
+    names_from = variable,
+    values_from = estimate
+  )
+
+# calculate the white-black ratio in employment rates
+home_tract <- home_tract %>% 
+  mutate(
+    home_dim = 
+      (B25003H_002 / B25003H_001) / (B25003B_002 / B25003B_001)
+    ) %>% 
+  mutate_at(vars(home_dim), ~replace(., is.infinite(.), 1)) %>%
+  mutate_at(vars(home_dim), ~replace(., is.nan(.), 0)) %>% 
+  dplyr::select(GEOID, home_dim)
+
+# join values into joined_summ
+joined_summ <- left_join(joined_summ, home_tract)
+
+rm(home_tract)
+```
+
+To summarize, we can dichotomize based on sample median, and sum those into a dichotomized sum. We can also z-score standardize each variable and take a weighted mean of those z-scores.
+
+```{r}
+joined_summ <- joined_summ %>% 
+  mutate(
+    dissim_bin = case_when(
+      dissim_index > median(dissim_index) ~ 1,
+      TRUE ~ 0), 
+    edu_bin = case_when(
+      edu_dim > median(edu_dim) ~ 1,
+      TRUE ~ 0), 
+    emp_bin = case_when(
+      emp_dim > median(emp_dim) ~ 1,
+      TRUE ~ 0), 
+    ice_bin = case_when(
+      ice_dim > median(ice_dim) ~ 1,
+      TRUE ~ 0), 
+    home_bin = case_when(
+      home_dim > median(home_dim) ~ 1,
+      TRUE ~ 0)
+    )
+
+# create and sum z-score standardized values and dichotomized values 
+joined_summ <- joined_summ %>% 
+  mutate(dim_sums = 
+           0.2*(dissim_index - mean(dissim_index))/sd(dissim_index) + 
+           0.2*(edu_dim - mean(edu_dim))/sd(edu_dim) + 
+           0.2*(emp_dim - mean(emp_dim))/sd(emp_dim) + 
+           0.2*(ice_dim - mean(ice_dim))/sd(ice_dim) + 
+           0.2*(home_dim - mean(home_dim))/sd(home_dim),
+         bin_sums = dissim_bin + edu_bin + emp_bin + ice_bin + home_bin)
+
+sr_tracts <- joined_summ %>% 
+  select(GEOID, dim_sums, bin_sums)
+
+# load crosswalk of GEOIDs to place names
+# obtained via https://mcdc.missouri.edu/applications/geocorr2022.html
+xwalk <- read_csv("/Users/lamhine/Documents/GitHub/solano_sr/policies/geoid_place_xwalk.csv") 
+
+# pick place with larger allocation factor value
+xwalk <- xwalk %>% 
+  group_by(GEOID) %>% 
+  slice_max(afact, n = 1) %>% 
+  select(GEOID, PlaceName)
+
+
+# join in the place names
+sr_tracts <- left_join(sr_tracts, xwalk)
+
+# join in the policy scores
+sr_tracts <- left_join(sr_tracts, pol_summ)
+
+# overwrite index==NA as unincorporated places with index==0
+sr_tracts <- sr_tracts %>% 
+  mutate(
+    PlaceName = case_when(
+      is.na(index) ~ "Unincorporated",
+      TRUE ~ PlaceName),
+    index = case_when(
+      PlaceName == "Unincorporated" ~ 0,
+      TRUE ~ index)
+    ) %>% 
+  ungroup()
+
+sr_tracts %>% slice_sample(n=20)
+```
+
+Summarize to get population-weighted tract means, and unweighted
+
+```{r}
+sr_tracts %>% 
+
+sr_tracts %>% 
+  group_by(PlaceName) %>% 
+  summarize(across(dim_sums, list(min = min, max = max, sd = sd)))
+```
+
+Plot the structural racism score vs policy index
+
+```{r}
+ggplot(sr_tracts, aes(x = factor(index), y = dim_sums, color = PlaceName)) +
+  geom_point(position = position_jitter(width = 0.2, height = 0), size = 3) +
+  labs(x = "Policy Progressiveness Index", y = "Structural Racism Score", color = "City") +
+  theme_minimal()
+```
+
+Create map base layer
+
+```{r}
+# get polygon data for solano county outline
+geo_outline <- get_acs(
+  geography = "county", 
+  variables = "B19013_001", #just pull income from ACS to get polygon
+  state = "06", 
+  county = "Solano",
+  year = 2022,
+  geometry = TRUE
+) 
+
+# get polygon data for solano county cities (places) to label map
+geo_place <- get_acs(
+  geography = "place", 
+  variables = "B19013_001", #just pull income from ACS to get polygon
+  state = "06", 
+  year = 2020,
+  geometry = TRUE
+  ) %>% 
+  filter(
+    str_detect(
+      NAME, 
+      c("Benicia city|Dixon city|Rio Vista city|Vallejo city|Suisun City city|Fairfield city|Vacaville city")
+      )
+    ) %>% 
+  mutate(
+    NAME = str_remove(
+      NAME, 
+      " city, California"
+    )
+  ) 
+
+# create map base layer
+map <- ggplot() +  
+  geom_sf(data = geo_outline, color = "black", fill = NA, lwd = 1) + 
+  theme_void()
+
+map
+```
+
+Map the structural racism scale (outcome)
+
+```{r}
+# get polygon data for solano county tracts
+geo_tracts <- get_acs(
+  geography = "tract", 
+  variables = "B19013_001", #just pull income from ACS to get polygon
+  state = "06", 
+  county = "Solano",
+  year = 2022,
+  geometry = TRUE
+) 
+
+# replace income data with SR scores 
+geo_tracts <- left_join(
+  geo_tracts,
+  select(
+    sr_tracts, GEOID, dim_sums
+    )
+  ) %>% 
+  select(-estimate)
+
+map + 
+  geom_sf(data = geo_tracts, aes(fill = dim_sums)) + 
+    geom_label_repel(
+    data = geo_place, 
+    aes(label = NAME,
+        geometry = geometry),
+    stat = "sf_coordinates"
+    )  +  
+  labs(fill = "Structural Racism Scale") 
+```
+
+Map the policy index (exposure)
+
+```{r}
+# get polygon data for solano county places
+geo_place <- get_acs(
+  geography = "place", 
+  variables = "B19013_001", #just pull income from ACS to get polygon
+  state = "06", 
+  year = 2020,
+  geometry = TRUE
+  ) %>% 
+  filter(
+    str_detect(
+      NAME, 
+      c("Benicia city|Dixon city|Rio Vista city|Vallejo city|Suisun City city|Fairfield city|Vacaville city")
+      )
+    ) %>% 
+  mutate(
+    PlaceName = str_remove(
+      NAME, 
+      " city, California"
+    )
+  ) %>% 
+  select(-NAME)
+
+# replace income data with policy index
+geo_place <- left_join(
+  geo_place,
+    distinct(
+      sr_tracts, PlaceName, index
+      )
+    ) %>% 
+  select(-estimate) %>% 
+  rename(NAME = PlaceName)
+
+
+map + 
+  geom_sf(data = geo_place, aes(fill = index)) + 
+  geom_label_repel(
+    data = geo_place, 
+    aes(label = NAME,
+        geometry = geometry),
+    stat = "sf_coordinates"
+    )  + 
+  labs(fill = "Policy Progressiveness Index") 
+
+```
+
+Run hierarchical models (structural racism scale \~ policy index)
+
+```{r}
+mod_gee <- geeglm(dim_sums ~ index,
+                id = PlaceName, 
+                data = sr_tracts,
+                family = "gaussian",
+                corstr = "ar1")
+
+mod_lmer <- lmer(dim_sums ~ index + (1 | PlaceName), data = sr_tracts)
+
+summary(mod_lmer)
+```
