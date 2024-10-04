@@ -7,8 +7,6 @@ library(ggrepel)
 library(mapview)
 library(poLCA)
 
-census_api_key("f77de7a3ed4802ce5f3a28b99ba1105b8bb39529")
-
 pull_data = function(my_state, my_county){
   
   acs = load_variables(2018, 'acs5', cache = TRUE) 
@@ -83,7 +81,7 @@ mapper = function(input_data, my_cities, legend_position = 'bottom left'){ #acce
     geom_sf(data = water, fill = '#cce6ff',color = NA, aes(geometry = geometry)) + #add water
     theme(panel.background = element_rect(fill = '#cce6ff', color = NA)) + #blue background to mesh with water
     #geom_sf(data = roads, color = 'white', aes(geometry = geometry)) + #add roads
-    geom_text_repel(color = 'black', data = cities, aes(label = NAME, geometry = geometry), stat = "sf_coordinates") + #add city names
+    geom_text_repel(color = 'black', data = cities, aes(label = NAME, geometry = geometry), stat = "sf_coordinates", min.segment.length = 1) + #add city names
     geom_sf(data = county, alpha = 0, aes(geometry = geometry)) + 
     coord_sf(xlim = c(as.numeric(limits$xmin),as.numeric(limits$xmax)), ylim = c(as.numeric(limits$ymin),as.numeric(limits$ymax))) #set framing(very important)
 }
